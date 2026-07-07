@@ -62,10 +62,13 @@ surface before prod.
 
 - **OpenAPI-first** for the HTTP API; the async intake returns `202 + case id`, and
   results are delivered via SSE/WebSocket or a `GET /cases/{id}` poll.
+- **Idempotent intake** — clients may send `Idempotency-Key` on `POST /v1/cases`; the
+  API replays the original accepted case instead of creating duplicates.
 - **Semantic versioning** for the API; version in the path (`/v1/`). Never break a
   released contract.
 - **Event schema registry** — the case lifecycle events ([08](08-scalability-architecture.md))
   have versioned, documented schemas. Downstream (audit, data platform) depends on them.
+  The walking skeleton exposes `/v1/event-schemas` plus `/v1/cases/{id}/events`.
 - **Typed contracts end-to-end** — shared types between the domain, the API, and the
   Next.js frontend so a contract change is a compile error, not a runtime surprise.
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 import threading
 
-from aegis_dx.domain import AuditEvent, CaseRecord, CaseStatus
+from aegis_dx.domain import AuditEvent, CaseLifecycleEvent, CaseRecord, CaseStatus
 
 
 class SQLiteCaseStore:
@@ -45,6 +45,24 @@ class SQLiteCaseStore:
                     previous_hash TEXT,
                     entry_hash TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS case_events (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    case_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS idempotency_keys (
+                    tenant_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, idempotency_key)
+                );
                 """
             )
 
@@ -76,6 +94,21 @@ class SQLiteCaseStore:
             row = connection.execute(
                 "SELECT payload FROM cases WHERE case_id = ?",
                 (case_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CaseRecord.model_validate_json(row["payload"])
+
+    def get_case_by_idempotency_key(self, tenant_id: str, idempotency_key: str) -> CaseRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT c.payload
+                FROM idempotency_keys k
+                JOIN cases c ON c.case_id = k.case_id
+                WHERE k.tenant_id = ? AND k.idempotency_key = ?
+                """,
+                (tenant_id, idempotency_key),
             ).fetchone()
         if row is None:
             return None
@@ -114,6 +147,22 @@ class SQLiteCaseStore:
                 terminal_statuses,
             ).fetchall()
         return [row["case_id"] for row in rows]
+
+    def register_idempotency_key(
+        self,
+        tenant_id: str,
+        idempotency_key: str,
+        case_id: str,
+        created_at: str,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO idempotency_keys (tenant_id, idempotency_key, case_id, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (tenant_id, idempotency_key, case_id, created_at),
+            )
 
     def append_audit_event(self, event: AuditEvent) -> AuditEvent:
         with self._lock, self._connect() as connection:
@@ -211,3 +260,55 @@ class SQLiteCaseStore:
             )
         return events
 
+    def append_case_event(self, event: CaseLifecycleEvent) -> CaseLifecycleEvent:
+        serialized_payload = json.dumps(event.payload, sort_keys=True)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO case_events (
+                    case_id,
+                    tenant_id,
+                    event_type,
+                    schema_version,
+                    payload,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.case_id,
+                    event.tenant_id,
+                    event.event_type,
+                    event.schema_version,
+                    serialized_payload,
+                    event.created_at.isoformat(),
+                ),
+            )
+        return event.model_copy(update={"sequence": cursor.lastrowid})
+
+    def list_case_events(self, case_id: str, tenant_id: str) -> list[CaseLifecycleEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT sequence, case_id, tenant_id, event_type, schema_version, payload, created_at
+                FROM case_events
+                WHERE case_id = ? AND tenant_id = ?
+                ORDER BY sequence ASC
+                """,
+                (case_id, tenant_id),
+            ).fetchall()
+
+        return [
+            CaseLifecycleEvent.model_validate(
+                {
+                    "sequence": row["sequence"],
+                    "case_id": row["case_id"],
+                    "tenant_id": row["tenant_id"],
+                    "event_type": row["event_type"],
+                    "schema_version": row["schema_version"],
+                    "payload": json.loads(row["payload"]),
+                    "created_at": row["created_at"],
+                }
+            )
+            for row in rows
+        ]

@@ -171,6 +171,7 @@ class CaseSubmissionAccepted(BaseModel):
     case_id: str
     trace_id: str
     status: CaseStatus
+    idempotency_replayed: bool = False
 
 
 class CaseReviewRequest(BaseModel):
@@ -191,3 +192,19 @@ class AuditEvent(BaseModel):
     previous_hash: str | None = None
     entry_hash: str | None = None
 
+
+class CaseLifecycleEvent(BaseModel):
+    sequence: int | None = None
+    case_id: str
+    tenant_id: str
+    event_type: str
+    schema_version: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class EventSchemaDefinition(BaseModel):
+    event_type: str
+    schema_version: str
+    description: str
+    required_payload_fields: list[str] = Field(default_factory=list)

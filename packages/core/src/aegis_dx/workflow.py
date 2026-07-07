@@ -9,6 +9,7 @@ from aegis_dx.adapters import StubIngestionAdapter, StubTriageAdapter
 from aegis_dx.domain import (
     ActorRole,
     AuditEvent,
+    CaseLifecycleEvent,
     CaseRecord,
     CaseReviewRequest,
     CaseStatus,
@@ -27,6 +28,7 @@ from aegis_dx.domain import (
 )
 from aegis_dx.ports import IngestionPort, TriagePort
 from aegis_dx.store import SQLiteCaseStore
+from aegis_dx.event_schemas import get_event_schema
 from aegis_dx.tracing import bind_correlation_id, get_correlation_id
 
 
@@ -71,7 +73,14 @@ class WorkflowRuntime:
         self,
         request: CaseSubmissionRequest,
         principal: Principal,
-    ) -> CaseRecord:
+        *,
+        idempotency_key: str | None = None,
+    ) -> tuple[CaseRecord, bool]:
+        if idempotency_key:
+            existing_case = self._store.get_case_by_idempotency_key(principal.tenant_id, idempotency_key)
+            if existing_case is not None:
+                return existing_case, True
+
         case_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         case = CaseRecord(
@@ -85,14 +94,26 @@ class WorkflowRuntime:
             updated_at=now,
         )
         self._store.save_case(case)
+        if idempotency_key:
+            self._store.register_idempotency_key(
+                principal.tenant_id,
+                idempotency_key,
+                case.case_id,
+                now.isoformat(),
+            )
         self._append_audit(
             case,
             event_type="case.submitted",
             principal=principal,
             payload={"site_id": request.site_id, "source_system": request.artifact.source_system},
         )
+        self._append_case_event(
+            case,
+            event_type="case.submitted",
+            payload={"site_id": request.site_id, "source_system": request.artifact.source_system},
+        )
         self.enqueue(case.case_id)
-        return case
+        return case, False
 
     def list_cases(self, principal: Principal) -> list[CaseRecord]:
         return self._store.list_cases_for_tenant(principal.tenant_id)
@@ -161,6 +182,10 @@ class WorkflowRuntime:
     def list_audit_events(self, case_id: str, principal: Principal) -> list[AuditEvent]:
         case = self.get_case(case_id, principal, log_access=False)
         return self._store.list_audit_events(case.case_id, case.tenant_id)
+
+    def list_case_events(self, case_id: str, principal: Principal) -> list[CaseLifecycleEvent]:
+        case = self.get_case(case_id, principal, log_access=False)
+        return self._store.list_case_events(case.case_id, case.tenant_id)
 
     def _run_worker(self) -> None:
         while not self._stop_event.is_set():
@@ -287,6 +312,11 @@ class WorkflowRuntime:
             principal=principal,
             payload={"status": case.status.value, **(payload or {})},
         )
+        self._append_case_event(
+            case,
+            event_type=event_type,
+            payload={"status": case.status.value, **(payload or {})},
+        )
 
     def _append_audit(
         self,
@@ -308,6 +338,26 @@ class WorkflowRuntime:
             payload={**base_payload, **(payload or {})},
         )
         return self._store.append_audit_event(event)
+
+    def _append_case_event(
+        self,
+        case: CaseRecord,
+        event_type: str,
+        payload: dict[str, object] | None = None,
+    ) -> CaseLifecycleEvent:
+        correlation_id = get_correlation_id()
+        base_payload: dict[str, object] = {"trace_id": case.trace_id}
+        if correlation_id is not None:
+            base_payload["request_correlation_id"] = correlation_id
+        schema = get_event_schema(event_type)
+        event = CaseLifecycleEvent(
+            case_id=case.case_id,
+            tenant_id=case.tenant_id,
+            event_type=event_type,
+            schema_version=schema.schema_version,
+            payload={**base_payload, **(payload or {})},
+        )
+        return self._store.append_case_event(event)
 
     def _draft_findings(self, case: CaseRecord) -> list[Finding]:
         text = (case.artifact.de_identified_text or "").lower()

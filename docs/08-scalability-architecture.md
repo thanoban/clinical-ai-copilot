@@ -123,6 +123,8 @@ flag. Never fabricate a finding to fill a gap.
 - **Circuit breakers** around external LLM providers and model servers; open circuit
   → route the case to `Degraded`, not to a hang.
 - **Idempotency keys** on case submission so a retried upload doesn't duplicate a case.
+- In the current walking skeleton this is surfaced directly at the API boundary via
+  the `Idempotency-Key` header on `POST /v1/cases`.
 - **Dead-letter queue** for cases that exhaust retries → on-call review, never dropped.
 - **Durable checkpointing** (LangGraph Postgres checkpointer) so no case is lost on
   crash/deploy. Alternative to evaluate at scale: **Temporal** for durable execution

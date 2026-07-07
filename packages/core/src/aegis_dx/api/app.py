@@ -9,11 +9,14 @@ from aegis_dx.domain import (
     ActorRole,
     AuditEvent,
     CaseRecord,
+    CaseLifecycleEvent,
     CaseReviewRequest,
     CaseSubmissionAccepted,
     CaseSubmissionRequest,
+    EventSchemaDefinition,
     Principal,
 )
+from aegis_dx.event_schemas import CASE_EVENT_SCHEMAS
 from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.tracing import (
     CORRELATION_ID_HEADER,
@@ -113,17 +116,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def submit_case(
         request: CaseSubmissionRequest,
         response: Response,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         principal: Principal = Depends(
             require_roles(ActorRole.CLINICIAN, ActorRole.REVIEWER, ActorRole.ADMIN)
         ),
         runtime: WorkflowRuntime = Depends(get_runtime),
     ) -> CaseSubmissionAccepted:
-        case = runtime.submit_case(request, principal)
+        case, replayed = runtime.submit_case(
+            request,
+            principal,
+            idempotency_key=idempotency_key,
+        )
         response.headers[CORRELATION_ID_HEADER] = case.trace_id
+        if idempotency_key:
+            response.headers["Idempotency-Key"] = idempotency_key
         return CaseSubmissionAccepted(
             case_id=case.case_id,
             trace_id=case.trace_id,
             status=case.status,
+            idempotency_replayed=replayed,
         )
 
     @app.get("/v1/cases", response_model=list[CaseRecord])
@@ -184,6 +195,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.") from exc
         except PermissionError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Case is not in your tenant.") from exc
+
+    @app.get("/v1/cases/{case_id}/events", response_model=list[CaseLifecycleEvent])
+    def get_case_events(
+        case_id: str,
+        response: Response,
+        principal: Principal = Depends(
+            require_roles(
+                ActorRole.CLINICIAN,
+                ActorRole.REVIEWER,
+                ActorRole.ADMIN,
+                ActorRole.AUDITOR,
+            )
+        ),
+        runtime: WorkflowRuntime = Depends(get_runtime),
+    ) -> list[CaseLifecycleEvent]:
+        try:
+            events = runtime.list_case_events(case_id, principal)
+            if events:
+                response.headers[CORRELATION_ID_HEADER] = events[0].payload["trace_id"]
+            return events
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Case is not in your tenant.") from exc
+
+    @app.get("/v1/event-schemas", response_model=list[EventSchemaDefinition])
+    def list_event_schemas(
+        response: Response,
+        request: Request,
+        principal: Principal = Depends(
+            require_roles(
+                ActorRole.CLINICIAN,
+                ActorRole.REVIEWER,
+                ActorRole.ADMIN,
+                ActorRole.AUDITOR,
+            )
+        ),
+    ) -> list[EventSchemaDefinition]:
+        response.headers[CORRELATION_ID_HEADER] = get_request_correlation_id(request)
+        return list(CASE_EVENT_SCHEMAS.values())
 
     @app.post("/v1/cases/{case_id}/review", response_model=CaseRecord)
     def review_case(
