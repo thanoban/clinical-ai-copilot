@@ -27,6 +27,7 @@ from aegis_dx.domain import (
 )
 from aegis_dx.ports import IngestionPort, TriagePort
 from aegis_dx.store import SQLiteCaseStore
+from aegis_dx.tracing import bind_correlation_id, get_correlation_id
 
 
 class WorkflowRuntime:
@@ -183,90 +184,91 @@ class WorkflowRuntime:
             return
 
         service_principal = service_principal.model_copy(update={"tenant_id": case.tenant_id})
-        while case.status in PROCESSABLE_CASE_STATUSES:
-            if case.status == CaseStatus.RECEIVED:
-                case.status = CaseStatus.DEIDENTIFIED
-                self._transition(case, service_principal, "workflow.deidentified")
-                continue
+        with bind_correlation_id(case.trace_id):
+            while case.status in PROCESSABLE_CASE_STATUSES:
+                if case.status == CaseStatus.RECEIVED:
+                    case.status = CaseStatus.DEIDENTIFIED
+                    self._transition(case, service_principal, "workflow.deidentified")
+                    continue
 
-            if case.status == CaseStatus.DEIDENTIFIED:
-                decision = self._triage.classify(case.artifact)
-                case.modality = decision.modality
-                case.region = decision.region
-                case.urgency = decision.urgency
-                case.status = CaseStatus.TRIAGED
-                self._transition(
-                    case,
-                    service_principal,
-                    "workflow.triaged",
-                    payload=decision.model_dump(mode="json"),
-                )
-                continue
-
-            if case.status == CaseStatus.TRIAGED:
-                case.status = CaseStatus.ANALYZING
-                self._transition(case, service_principal, "workflow.analysis_started")
-                continue
-
-            if case.status == CaseStatus.ANALYZING:
-                case.findings = self._draft_findings(case)
-                if not case.findings:
-                    case.status = CaseStatus.DEGRADED
-                    case.escalation = EscalationDecision(
-                        required=True,
-                        reason="No supported findings could be generated for this modality.",
-                    )
-                    self._transition(case, service_principal, "workflow.degraded")
-                else:
-                    case.status = CaseStatus.VERIFYING
+                if case.status == CaseStatus.DEIDENTIFIED:
+                    decision = self._triage.classify(case.artifact)
+                    case.modality = decision.modality
+                    case.region = decision.region
+                    case.urgency = decision.urgency
+                    case.status = CaseStatus.TRIAGED
                     self._transition(
                         case,
                         service_principal,
-                        "workflow.analysis_completed",
-                        payload={"findings": len(case.findings)},
+                        "workflow.triaged",
+                        payload=decision.model_dump(mode="json"),
                     )
-                continue
+                    continue
 
-            if case.status == CaseStatus.VERIFYING:
-                case.verification = self._verify_findings(case.findings)
-                case.status = CaseStatus.SYNTHESIZED
-                self._transition(
-                    case,
-                    service_principal,
-                    "workflow.verification_completed",
-                    payload={"flags": sum(len(item.critic_flags) for item in case.verification)},
-                )
-                continue
+                if case.status == CaseStatus.TRIAGED:
+                    case.status = CaseStatus.ANALYZING
+                    self._transition(case, service_principal, "workflow.analysis_started")
+                    continue
 
-            if case.status == CaseStatus.SYNTHESIZED:
-                case.differential = self._build_differential(case.findings)
-                case.report = self._build_report(case)
-                case.status = CaseStatus.CALIBRATED
-                self._transition(
-                    case,
-                    service_principal,
-                    "workflow.synthesized",
-                    payload={"differential": len(case.differential)},
-                )
-                continue
+                if case.status == CaseStatus.ANALYZING:
+                    case.findings = self._draft_findings(case)
+                    if not case.findings:
+                        case.status = CaseStatus.DEGRADED
+                        case.escalation = EscalationDecision(
+                            required=True,
+                            reason="No supported findings could be generated for this modality.",
+                        )
+                        self._transition(case, service_principal, "workflow.degraded")
+                    else:
+                        case.status = CaseStatus.VERIFYING
+                        self._transition(
+                            case,
+                            service_principal,
+                            "workflow.analysis_completed",
+                            payload={"findings": len(case.findings)},
+                        )
+                    continue
 
-            if case.status == CaseStatus.CALIBRATED:
-                case.escalation = self._calibrate(case)
-                case.status = (
-                    CaseStatus.ESCALATED if case.escalation.required else CaseStatus.AWAITING_REVIEW
-                )
-                self._transition(
-                    case,
-                    service_principal,
-                    "workflow.calibrated",
-                    payload=case.escalation.model_dump(mode="json"),
-                )
-                continue
+                if case.status == CaseStatus.VERIFYING:
+                    case.verification = self._verify_findings(case.findings)
+                    case.status = CaseStatus.SYNTHESIZED
+                    self._transition(
+                        case,
+                        service_principal,
+                        "workflow.verification_completed",
+                        payload={"flags": sum(len(item.critic_flags) for item in case.verification)},
+                    )
+                    continue
 
-            if case.status in {CaseStatus.ESCALATED, CaseStatus.DEGRADED}:
-                case.status = CaseStatus.AWAITING_REVIEW
-                self._transition(case, service_principal, "workflow.awaiting_review")
-                continue
+                if case.status == CaseStatus.SYNTHESIZED:
+                    case.differential = self._build_differential(case.findings)
+                    case.report = self._build_report(case)
+                    case.status = CaseStatus.CALIBRATED
+                    self._transition(
+                        case,
+                        service_principal,
+                        "workflow.synthesized",
+                        payload={"differential": len(case.differential)},
+                    )
+                    continue
+
+                if case.status == CaseStatus.CALIBRATED:
+                    case.escalation = self._calibrate(case)
+                    case.status = (
+                        CaseStatus.ESCALATED if case.escalation.required else CaseStatus.AWAITING_REVIEW
+                    )
+                    self._transition(
+                        case,
+                        service_principal,
+                        "workflow.calibrated",
+                        payload=case.escalation.model_dump(mode="json"),
+                    )
+                    continue
+
+                if case.status in {CaseStatus.ESCALATED, CaseStatus.DEGRADED}:
+                    case.status = CaseStatus.AWAITING_REVIEW
+                    self._transition(case, service_principal, "workflow.awaiting_review")
+                    continue
 
         self._store.save_case(case)
 
@@ -293,13 +295,17 @@ class WorkflowRuntime:
         principal: Principal,
         payload: dict[str, object] | None = None,
     ) -> AuditEvent:
+        correlation_id = get_correlation_id()
+        base_payload: dict[str, object] = {"trace_id": case.trace_id}
+        if correlation_id is not None:
+            base_payload["request_correlation_id"] = correlation_id
         event = AuditEvent(
             case_id=case.case_id,
             tenant_id=case.tenant_id,
             event_type=event_type,
             actor_id=principal.actor_id,
             actor_role=principal.role.value,
-            payload=payload or {},
+            payload={**base_payload, **(payload or {})},
         )
         return self._store.append_audit_event(event)
 
@@ -394,4 +400,3 @@ class WorkflowRuntime:
                 reason="Low-confidence findings require human escalation.",
             )
         return EscalationDecision(required=False, reason=None)
-

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 
 from aegis_dx.config import Settings, load_settings
 from aegis_dx.domain import (
@@ -15,6 +15,12 @@ from aegis_dx.domain import (
     Principal,
 )
 from aegis_dx.store import SQLiteCaseStore
+from aegis_dx.tracing import (
+    CORRELATION_ID_HEADER,
+    new_correlation_id,
+    reset_correlation_id,
+    set_correlation_id,
+)
 from aegis_dx.workflow import WorkflowRuntime
 
 
@@ -44,8 +50,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.runtime = runtime
 
+    @app.middleware("http")
+    async def correlation_middleware(request: Request, call_next):
+        correlation_id = request.headers.get(CORRELATION_ID_HEADER) or new_correlation_id()
+        token = set_correlation_id(correlation_id)
+        request.state.correlation_id = correlation_id
+        try:
+            response = await call_next(request)
+        finally:
+            reset_correlation_id(token)
+        response.headers.setdefault(CORRELATION_ID_HEADER, correlation_id)
+        return response
+
     def get_runtime() -> WorkflowRuntime:
         return app.state.runtime
+
+    def get_request_correlation_id(request: Request) -> str:
+        return getattr(request.state, "correlation_id", new_correlation_id())
 
     def get_principal(
         x_actor_id: str | None = Header(default=None, alias="X-Actor-Id"),
@@ -98,7 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime: WorkflowRuntime = Depends(get_runtime),
     ) -> CaseSubmissionAccepted:
         case = runtime.submit_case(request, principal)
-        response.headers["X-Correlation-Id"] = case.trace_id
+        response.headers[CORRELATION_ID_HEADER] = case.trace_id
         return CaseSubmissionAccepted(
             case_id=case.case_id,
             trace_id=case.trace_id,
@@ -107,6 +128,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/cases", response_model=list[CaseRecord])
     def list_cases(
+        response: Response,
+        request: Request,
         principal: Principal = Depends(
             require_roles(
                 ActorRole.CLINICIAN,
@@ -117,11 +140,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         runtime: WorkflowRuntime = Depends(get_runtime),
     ) -> list[CaseRecord]:
+        response.headers[CORRELATION_ID_HEADER] = get_request_correlation_id(request)
         return runtime.list_cases(principal)
 
     @app.get("/v1/cases/{case_id}", response_model=CaseRecord)
     def get_case(
         case_id: str,
+        response: Response,
         principal: Principal = Depends(
             require_roles(
                 ActorRole.CLINICIAN,
@@ -133,7 +158,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime: WorkflowRuntime = Depends(get_runtime),
     ) -> CaseRecord:
         try:
-            return runtime.get_case(case_id, principal, log_access=True)
+            case = runtime.get_case(case_id, principal, log_access=True)
+            response.headers[CORRELATION_ID_HEADER] = case.trace_id
+            return case
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.") from exc
         except PermissionError as exc:
@@ -142,13 +169,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/v1/cases/{case_id}/audit", response_model=list[AuditEvent])
     def get_audit_log(
         case_id: str,
+        response: Response,
         principal: Principal = Depends(
             require_roles(ActorRole.REVIEWER, ActorRole.ADMIN, ActorRole.AUDITOR)
         ),
         runtime: WorkflowRuntime = Depends(get_runtime),
     ) -> list[AuditEvent]:
         try:
-            return runtime.list_audit_events(case_id, principal)
+            events = runtime.list_audit_events(case_id, principal)
+            if events:
+                response.headers[CORRELATION_ID_HEADER] = events[0].payload["trace_id"]
+            return events
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.") from exc
         except PermissionError as exc:
@@ -158,11 +189,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def review_case(
         case_id: str,
         review: CaseReviewRequest,
+        response: Response,
         principal: Principal = Depends(require_roles(ActorRole.CLINICIAN, ActorRole.REVIEWER)),
         runtime: WorkflowRuntime = Depends(get_runtime),
     ) -> CaseRecord:
         try:
-            return runtime.review_case(case_id, review, principal)
+            case = runtime.review_case(case_id, review, principal)
+            response.headers[CORRELATION_ID_HEADER] = case.trace_id
+            return case
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.") from exc
         except PermissionError as exc:

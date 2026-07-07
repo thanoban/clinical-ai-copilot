@@ -55,7 +55,7 @@ def test_case_submission_runs_through_async_workflow(tmp_path) -> None:
     with create_client(tmp_path) as client:
         response = client.post(
             "/v1/cases",
-            headers=CLINICIAN_HEADERS,
+            headers={**CLINICIAN_HEADERS, "X-Correlation-Id": "submit-correlation-id"},
             json={
                 "site_id": "site-a",
                 "artifact": {
@@ -76,6 +76,16 @@ def test_case_submission_runs_through_async_workflow(tmp_path) -> None:
         assert "[redacted-id]" in case["artifact"]["de_identified_text"]
         assert "[redacted-email]" in case["artifact"]["de_identified_text"]
         assert case["report"]["disclaimer"].startswith("Research prototype only")
+
+        audit_response = client.get(
+            f"/v1/cases/{accepted['case_id']}/audit",
+            headers=AUDITOR_HEADERS,
+        )
+        assert audit_response.status_code == 200
+        assert audit_response.headers["X-Correlation-Id"] == accepted["trace_id"]
+        submitted_event = audit_response.json()[0]
+        assert submitted_event["payload"]["trace_id"] == accepted["trace_id"]
+        assert submitted_event["payload"]["request_correlation_id"] == "submit-correlation-id"
 
 
 def test_review_and_audit_log_are_recorded(tmp_path) -> None:
@@ -105,6 +115,7 @@ def test_review_and_audit_log_are_recorded(tmp_path) -> None:
 
         assert review_response.status_code == 200
         assert review_response.json()["status"] == "Edited"
+        assert review_response.headers["X-Correlation-Id"] == case_id
         assert (
             review_response.json()["report"]["summary"]
             == "Reviewer adjusted the draft summary before confirmation."
@@ -144,3 +155,9 @@ def test_tenant_isolation_and_role_guards(tmp_path) -> None:
         )
         assert audit_response.status_code == 403
 
+
+def test_healthcheck_returns_generated_correlation_id(tmp_path) -> None:
+    with create_client(tmp_path) as client:
+        response = client.get("/healthz")
+        assert response.status_code == 200
+        assert response.headers["X-Correlation-Id"]
