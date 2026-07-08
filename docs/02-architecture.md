@@ -70,7 +70,9 @@ of the graph.
 
 The current walking skeleton already reflects the same separation of concerns in a
 stub form: retrieval fills `evidence[]`, a specialist adapter produces `findings[]`,
-and synthesis/report adapters turn that into a clinician-facing draft.
+and synthesis/report adapters turn that into a clinician-facing draft. Verification
+and guardrail decisions are now also adapter-backed in the implementation, so the
+workflow controls sequencing while the trust logic remains swappable.
 
 Every node runs with **timeouts, retries, and a circuit breaker**. If a specialist
 exhausts its retries the case moves to a **`Degraded`** state and reaches the

@@ -27,6 +27,9 @@ also maps to **IEC 62304** (software lifecycle) and is worth doing well from the
 - The same contract-first pattern now also covers retrieval, synthesis, and report
   adapters, which keeps Phase-3 workflow evolution testable without depending on a
   live vector store or external LLM.
+- The trust layer now follows the same rule: verification and guardrail adapters
+  have shared contracts, so escalation behavior can evolve without turning the
+  workflow into an untestable tangle of conditional logic.
 - **Integration** — the LangGraph graph wired with fake/deterministic adapters, so the
   verify loop, escalation paths, and the `Degraded`/`Failed` transitions are tested
   without GPUs or LLM cost.

@@ -15,24 +15,22 @@ from aegis_dx.domain import (
     CaseReviewRequest,
     CaseStatus,
     CaseSubmissionRequest,
-    DifferentialItem,
     EscalationDecision,
     Finding,
     HumanAction,
     HumanReviewRecord,
     Principal,
     PROCESSABLE_CASE_STATUSES,
-    StructuredReport,
     TERMINAL_CASE_STATUSES,
     TriageDecision,
-    UrgencyLevel,
     VerificationResult,
 )
-from aegis_dx.ports import IngestionPort, ReportPort, RetrievalPort, SynthesisPort, TriagePort
+from aegis_dx.ports import GuardrailPort, IngestionPort, ReportPort, RetrievalPort, SynthesisPort, TriagePort, VerificationPort
 from aegis_dx.specialists import SpecialistRegistry, StubChestXRaySpecialistAdapter
 from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.event_schemas import get_event_schema
 from aegis_dx.tracing import bind_correlation_id, get_correlation_id
+from aegis_dx.trust import StubGuardrailAdapter, StubVerificationAdapter
 
 
 class WorkflowRuntime:
@@ -45,6 +43,8 @@ class WorkflowRuntime:
         retrieval: RetrievalPort | None = None,
         synthesis: SynthesisPort | None = None,
         reporter: ReportPort | None = None,
+        verifier: VerificationPort | None = None,
+        guardrail: GuardrailPort | None = None,
         worker_poll_interval_seconds: float = 0.05,
     ) -> None:
         self._store = store
@@ -54,6 +54,8 @@ class WorkflowRuntime:
         self._retrieval = retrieval or StubRetrievalAdapter()
         self._synthesis = synthesis or StubSynthesisAdapter()
         self._reporter = reporter or StubReportAdapter()
+        self._verifier = verifier or StubVerificationAdapter()
+        self._guardrail = guardrail or StubGuardrailAdapter()
         self._worker_poll_interval_seconds = worker_poll_interval_seconds
         self._queue: Queue[str] = Queue()
         self._stop_event = threading.Event()
@@ -316,13 +318,23 @@ class WorkflowRuntime:
                     continue
 
                 if case.status == CaseStatus.VERIFYING:
-                    case.verification = self._verify_findings(case.findings)
+                    triage = TriageDecision(
+                        modality=case.modality or "unknown",
+                        region=case.region or "unknown",
+                        urgency=case.urgency,
+                    )
+                    case.verification = self._verifier.verify(case.findings, case.evidence, triage)
                     case.status = CaseStatus.SYNTHESIZED
                     self._transition(
                         case,
                         service_principal,
                         "workflow.verification_completed",
-                        payload={"flags": sum(len(item.critic_flags) for item in case.verification)},
+                        payload={
+                            "flags": sum(len(item.critic_flags) for item in case.verification),
+                            "escalated_findings": sum(
+                                1 for item in case.verification if item.requires_escalation
+                            ),
+                        },
                     )
                     continue
 
@@ -357,7 +369,16 @@ class WorkflowRuntime:
                     continue
 
                 if case.status == CaseStatus.CALIBRATED:
-                    case.escalation = self._calibrate(case)
+                    triage = TriageDecision(
+                        modality=case.modality or "unknown",
+                        region=case.region or "unknown",
+                        urgency=case.urgency,
+                    )
+                    case.escalation = self._guardrail.decide(
+                        case.findings,
+                        case.verification,
+                        triage,
+                    )
                     case.status = (
                         CaseStatus.ESCALATED if case.escalation.required else CaseStatus.AWAITING_REVIEW
                     )
@@ -452,30 +473,3 @@ class WorkflowRuntime:
         )
         return self._store.append_case_event(event)
 
-    def _verify_findings(self, findings: list[Finding]) -> list[VerificationResult]:
-        results: list[VerificationResult] = []
-        for finding in findings:
-            critic_flags: list[str] = []
-            requires_escalation = finding.probability < 0.7
-            if requires_escalation:
-                critic_flags.append("low_confidence_finding")
-            results.append(
-                VerificationResult(
-                    claim=finding.claim,
-                    agreement_score=max(0.55, round(finding.probability - 0.08, 2)),
-                    critic_flags=critic_flags,
-                    requires_escalation=requires_escalation,
-                )
-            )
-        return results
-
-    def _calibrate(self, case: CaseRecord) -> EscalationDecision:
-        flagged = [item for item in case.verification if item.requires_escalation]
-        if case.urgency == UrgencyLevel.STAT:
-            return EscalationDecision(required=True, reason="Stat cases require supervisor review.")
-        if flagged:
-            return EscalationDecision(
-                required=True,
-                reason="Low-confidence findings require human escalation.",
-            )
-        return EscalationDecision(required=False, reason=None)

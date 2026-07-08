@@ -71,7 +71,9 @@ The current walking skeleton now follows this shape directly: workflow analysis
 resolves a specialist by triaged modality through a registry, rather than embedding
 modality-specific logic in the workflow itself. Retrieval, synthesis, and report
 generation are also now wired behind their own ports with stub adapters, so the
-workflow owns sequencing while adapters own content generation.
+workflow owns sequencing while adapters own content generation. Verification and
+guardrail decisions now follow the same pattern, which keeps Phase-4 trust behavior
+out of the workflow body and ready for heterogeneous-model upgrades later.
 
 ### Adapters (swappable implementations)
 

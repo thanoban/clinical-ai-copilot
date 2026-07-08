@@ -7,11 +7,13 @@ from aegis_dx.domain import (
     ArtifactRecord,
     AuditEvent,
     DifferentialItem,
+    EscalationDecision,
     EvidenceSnippet,
     Finding,
     Principal,
     StructuredReport,
     TriageDecision,
+    VerificationResult,
 )
 
 
@@ -65,6 +67,26 @@ class ReportPort(Protocol):
         differential: list[DifferentialItem],
     ) -> StructuredReport:
         """Render the clinician-facing draft report."""
+
+
+class VerificationPort(Protocol):
+    def verify(
+        self,
+        findings: list[Finding],
+        evidence: list[EvidenceSnippet],
+        triage: TriageDecision,
+    ) -> list[VerificationResult]:
+        """Challenge specialist findings and emit agreement or escalation flags."""
+
+
+class GuardrailPort(Protocol):
+    def decide(
+        self,
+        findings: list[Finding],
+        verification: list[VerificationResult],
+        triage: TriageDecision,
+    ) -> EscalationDecision:
+        """Turn verification outcomes into an escalation decision."""
 
 
 class AuditPort(Protocol):

@@ -75,11 +75,14 @@ def test_case_submission_runs_through_async_workflow(tmp_path) -> None:
         assert case["artifact"]["de_identified"] is True
         assert case["evidence"]
         assert case["evidence"][0]["source_type"] in {"guideline", "reference-case"}
+        assert case["verification"]
+        assert case["verification"][0]["requires_escalation"] is False
         assert "[redacted-id]" in case["artifact"]["de_identified_text"]
         assert "[redacted-email]" in case["artifact"]["de_identified_text"]
         assert case["report"]["disclaimer"].startswith("Research prototype only")
         assert "with retrieved evidence support" in case["report"]["summary"]
         assert any(link.startswith("guideline://") for link in case["report"]["evidence_links"])
+        assert case["escalation"]["required"] is False
 
         audit_response = client.get(
             f"/v1/cases/{accepted['case_id']}/audit",
@@ -152,6 +155,11 @@ def test_review_and_audit_log_are_recorded(tmp_path) -> None:
             event["payload"].get("evidence_count", 0) >= 1
             for event in audit_events
             if event["event_type"] == "workflow.retrieved"
+        )
+        assert any(
+            event["payload"].get("escalated_findings") == 0
+            for event in audit_events
+            if event["event_type"] == "workflow.verification_completed"
         )
 
         previous_hash = None
@@ -251,6 +259,38 @@ def test_unsupported_modality_degrades_transparently(tmp_path) -> None:
         assert degraded_event["payload"]["modality"] == "ecg"
 
 
+def test_low_confidence_case_is_escalated_by_guardrail(tmp_path) -> None:
+    with create_client(tmp_path) as client:
+        create_response = client.post(
+            "/v1/cases",
+            headers=CLINICIAN_HEADERS,
+            json={
+                "artifact": {
+                    "mime_type": "application/dicom",
+                    "report_text": "General chest xray follow-up with no focal issue described.",
+                }
+            },
+        )
+        case_id = create_response.json()["case_id"]
+        case = wait_for_review(client, case_id)
+
+        assert case["verification"][0]["requires_escalation"] is True
+        assert "low_confidence_finding" in case["verification"][0]["critic_flags"]
+        assert case["escalation"]["required"] is True
+        assert case["escalation"]["reason"] == "Low-confidence findings require human escalation."
+
+        events_response = client.get(
+            f"/v1/cases/{case_id}/events",
+            headers=CLINICIAN_HEADERS,
+        )
+        assert events_response.status_code == 200
+        calibrated_event = next(
+            event for event in events_response.json() if event["event_type"] == "workflow.calibrated"
+        )
+        assert calibrated_event["payload"]["required"] is True
+        assert calibrated_event["payload"]["reason"] == "Low-confidence findings require human escalation."
+
+
 def test_healthcheck_returns_generated_correlation_id(tmp_path) -> None:
     with create_client(tmp_path) as client:
         response = client.get("/healthz")
@@ -265,5 +305,6 @@ def test_event_schema_registry_is_exposed(tmp_path) -> None:
         payload = response.json()
         assert any(item["event_type"] == "workflow.triaged" for item in payload)
         assert any(item["event_type"] == "workflow.retrieved" for item in payload)
+        assert any(item["event_type"] == "workflow.verification_completed" for item in payload)
         triaged = next(item for item in payload if item["event_type"] == "workflow.triaged")
         assert "modality" in triaged["required_payload_fields"]

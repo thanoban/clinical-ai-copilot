@@ -50,7 +50,7 @@ CASE_EVENT_SCHEMAS: dict[str, EventSchemaDefinition] = {
         event_type="workflow.verification_completed",
         schema_version="1.0.0",
         description="Verification finished for the current finding set.",
-        required_payload_fields=["trace_id", "status", "flags"],
+        required_payload_fields=["trace_id", "status", "flags", "escalated_findings"],
     ),
     "workflow.synthesized": EventSchemaDefinition(
         event_type="workflow.synthesized",
@@ -62,7 +62,7 @@ CASE_EVENT_SCHEMAS: dict[str, EventSchemaDefinition] = {
         event_type="workflow.calibrated",
         schema_version="1.0.0",
         description="Calibration and escalation decision completed.",
-        required_payload_fields=["trace_id", "status", "required"],
+        required_payload_fields=["trace_id", "status", "required", "reason"],
     ),
     "workflow.awaiting_review": EventSchemaDefinition(
         event_type="workflow.awaiting_review",
