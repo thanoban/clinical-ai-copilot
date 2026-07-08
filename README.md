@@ -68,6 +68,8 @@ adding vertical #2 must not require touching the orchestrator.
 | [09 — Security, Identity & Audit](docs/09-security-identity-audit.md) | SSO/RBAC, immutable audit log, secrets, encryption, PHI-egress rule, threat model |
 | [10 — Observability & MLOps](docs/10-observability-mlops.md) | Tracing/metrics/logs, model registry, eval gates, shadow/canary, drift monitoring |
 | [11 — Engineering Practices](docs/11-engineering-practices.md) | Test pyramid + contract tests, CI/CD, environments, IaC, API conventions, IEC 62304 |
+| [12 — Training Plan](docs/12-training-plan.md) | Per-vertical training recipe: splits, preprocessing, loss/imbalance, metrics, compute, promotion gates |
+| [13 — Agent Build Plan](docs/13-agent-build-plan.md) | Build order for every agent in the roster, I/O contracts, prompt strategy, acceptance/contract tests |
 
 ## Novelty candidates (pick one to lead with)
 

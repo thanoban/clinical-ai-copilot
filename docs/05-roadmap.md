@@ -2,6 +2,8 @@
 
 Phase durations are rough (solo/small-team, weeks). The ordering matters more than
 the numbers. **The shell is built once (Phases 1–5); verticals after that reuse it.**
+Per-agent build steps and acceptance tests: [13 — Agent Build Plan](13-agent-build-plan.md).
+Per-model training recipes: [12 — Training Plan](12-training-plan.md).
 
 | Phase | Deliverable | Weeks |
 |-------|-------------|-------|

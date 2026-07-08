@@ -1,5 +1,10 @@
 # 04 — Data & Models
 
+> This doc covers *which* datasets and models per vertical. For the concrete
+> training recipe — splits, preprocessing, loss functions, metrics, compute budget,
+> and promotion gates — see [12 — Training Plan](12-training-plan.md). For how each
+> trained model gets wrapped into an agent, see [13 — Agent Build Plan](13-agent-build-plan.md).
+
 ## Datasets by vertical
 
 | Vertical | Datasets | Access |
