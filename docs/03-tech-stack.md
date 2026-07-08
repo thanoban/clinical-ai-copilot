@@ -67,6 +67,10 @@ vertical #2 = write one new adapter + register it with the triage router. The
 orchestrator graph does not change. That property is the MVP's acceptance test for
 the shell.
 
+The current walking skeleton now follows this shape directly: workflow analysis
+resolves a specialist by triaged modality through a registry, rather than embedding
+modality-specific logic in the workflow itself.
+
 ### Adapters (swappable implementations)
 
 ```

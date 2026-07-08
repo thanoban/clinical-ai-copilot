@@ -138,6 +138,11 @@ def test_review_and_audit_log_are_recorded(tmp_path) -> None:
         audit_events = audit_response.json()
         assert any(event["event_type"] == "workflow.triaged" for event in audit_events)
         assert audit_events[-1]["event_type"] == "case.review.edit"
+        assert any(
+            event["payload"].get("specialist_modality") == "chest_xray"
+            for event in audit_events
+            if event["event_type"] == "workflow.analysis_completed"
+        )
 
         previous_hash = None
         for event in audit_events:
@@ -203,6 +208,37 @@ def test_tenant_isolation_and_role_guards(tmp_path) -> None:
             headers=OTHER_TENANT_HEADERS,
         )
         assert events_response.status_code == 403
+
+
+def test_unsupported_modality_degrades_transparently(tmp_path) -> None:
+    with create_client(tmp_path) as client:
+        create_response = client.post(
+            "/v1/cases",
+            headers=CLINICIAN_HEADERS,
+            json={
+                "artifact": {
+                    "mime_type": "application/ecg",
+                    "report_text": "Stat ECG review requested.",
+                }
+            },
+        )
+        case_id = create_response.json()["case_id"]
+        case = wait_for_review(client, case_id)
+
+        assert case["modality"] == "ecg"
+        assert case["escalation"]["required"] is True
+        assert "No specialist is registered for modality 'ecg'." == case["escalation"]["reason"]
+        assert case["findings"] == []
+
+        events_response = client.get(
+            f"/v1/cases/{case_id}/events",
+            headers=CLINICIAN_HEADERS,
+        )
+        assert events_response.status_code == 200
+        degraded_event = next(
+            event for event in events_response.json() if event["event_type"] == "workflow.degraded"
+        )
+        assert degraded_event["payload"]["modality"] == "ecg"
 
 
 def test_healthcheck_returns_generated_correlation_id(tmp_path) -> None:

@@ -23,10 +23,12 @@ from aegis_dx.domain import (
     PROCESSABLE_CASE_STATUSES,
     StructuredReport,
     TERMINAL_CASE_STATUSES,
+    TriageDecision,
     UrgencyLevel,
     VerificationResult,
 )
 from aegis_dx.ports import IngestionPort, TriagePort
+from aegis_dx.specialists import SpecialistRegistry, StubChestXRaySpecialistAdapter
 from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.event_schemas import get_event_schema
 from aegis_dx.tracing import bind_correlation_id, get_correlation_id
@@ -38,11 +40,13 @@ class WorkflowRuntime:
         store: SQLiteCaseStore,
         ingestion: IngestionPort | None = None,
         triage: TriagePort | None = None,
+        specialists: SpecialistRegistry | None = None,
         worker_poll_interval_seconds: float = 0.05,
     ) -> None:
         self._store = store
         self._ingestion = ingestion or StubIngestionAdapter()
         self._triage = triage or StubTriageAdapter()
+        self._specialists = specialists or SpecialistRegistry([StubChestXRaySpecialistAdapter()])
         self._worker_poll_interval_seconds = worker_poll_interval_seconds
         self._queue: Queue[str] = Queue()
         self._stop_event = threading.Event()
@@ -236,22 +240,56 @@ class WorkflowRuntime:
                     continue
 
                 if case.status == CaseStatus.ANALYZING:
-                    case.findings = self._draft_findings(case)
-                    if not case.findings:
+                    specialist = self._specialists.resolve(case.modality)
+                    if specialist is None:
                         case.status = CaseStatus.DEGRADED
                         case.escalation = EscalationDecision(
                             required=True,
-                            reason="No supported findings could be generated for this modality.",
+                            reason=f"No specialist is registered for modality '{case.modality}'.",
                         )
-                        self._transition(case, service_principal, "workflow.degraded")
-                    else:
-                        case.status = CaseStatus.VERIFYING
                         self._transition(
                             case,
                             service_principal,
-                            "workflow.analysis_completed",
-                            payload={"findings": len(case.findings)},
+                            "workflow.degraded",
+                            payload={"reason": case.escalation.reason, "modality": case.modality},
                         )
+                    else:
+                        triage = TriageDecision(
+                            modality=case.modality or "unknown",
+                            region=case.region or "unknown",
+                            urgency=case.urgency,
+                        )
+                        case.findings = specialist.analyze(case.artifact, triage)
+                        if not case.findings:
+                            case.status = CaseStatus.DEGRADED
+                            case.escalation = EscalationDecision(
+                                required=True,
+                                reason=(
+                                    f"Specialist '{specialist.modality}' returned no findings for "
+                                    "this artifact."
+                                ),
+                            )
+                            self._transition(
+                                case,
+                                service_principal,
+                                "workflow.degraded",
+                                payload={
+                                    "reason": case.escalation.reason,
+                                    "modality": case.modality,
+                                    "specialist_modality": specialist.modality,
+                                },
+                            )
+                        else:
+                            case.status = CaseStatus.VERIFYING
+                            self._transition(
+                                case,
+                                service_principal,
+                                "workflow.analysis_completed",
+                                payload={
+                                    "findings": len(case.findings),
+                                    "specialist_modality": specialist.modality,
+                                },
+                            )
                     continue
 
                 if case.status == CaseStatus.VERIFYING:
@@ -358,43 +396,6 @@ class WorkflowRuntime:
             payload={**base_payload, **(payload or {})},
         )
         return self._store.append_case_event(event)
-
-    def _draft_findings(self, case: CaseRecord) -> list[Finding]:
-        text = (case.artifact.de_identified_text or "").lower()
-        if case.modality != "chest_xray":
-            return []
-        if "pneumonia" in text:
-            return [
-                Finding(
-                    claim="Possible right lower lobe pneumonia.",
-                    locus="right-lower-lung-zone",
-                    probability=0.76,
-                    source_agent="cxr-specialist",
-                    model_version="stub-medgemma-cxr-v1",
-                    saliency_ref="overlay://right-lower-lung-zone",
-                )
-            ]
-        if "effusion" in text:
-            return [
-                Finding(
-                    claim="Small left pleural effusion.",
-                    locus="left-costophrenic-angle",
-                    probability=0.71,
-                    source_agent="cxr-specialist",
-                    model_version="stub-medgemma-cxr-v1",
-                    saliency_ref="overlay://left-costophrenic-angle",
-                )
-            ]
-        return [
-            Finding(
-                claim="No focal cardiopulmonary abnormality identified in the draft path.",
-                locus="global-thorax",
-                probability=0.63,
-                source_agent="cxr-specialist",
-                model_version="stub-medgemma-cxr-v1",
-                saliency_ref="overlay://global-thorax",
-            )
-        ]
 
     def _verify_findings(self, findings: list[Finding]) -> list[VerificationResult]:
         results: list[VerificationResult] = []

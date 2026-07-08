@@ -21,6 +21,9 @@ also maps to **IEC 62304** (software lifecycle) and is worth doing well from the
   what actually guarantees the [D3](07-risks-decisions.md) promise that "adding
   vertical #2 doesn't touch the orchestrator" — a new adapter is done when it passes
   the contract, and the graph is guaranteed to accept it.
+- The walking skeleton already applies this pattern to ingestion, triage, and the
+  first stub CXR specialist adapter, so future verticals extend an existing contract
+  surface instead of inventing one.
 - **Integration** — the LangGraph graph wired with fake/deterministic adapters, so the
   verify loop, escalation paths, and the `Degraded`/`Failed` transitions are tested
   without GPUs or LLM cost.
