@@ -24,6 +24,9 @@ also maps to **IEC 62304** (software lifecycle) and is worth doing well from the
 - The walking skeleton already applies this pattern to ingestion, triage, and the
   first stub CXR specialist adapter, so future verticals extend an existing contract
   surface instead of inventing one.
+- The same contract-first pattern now also covers retrieval, synthesis, and report
+  adapters, which keeps Phase-3 workflow evolution testable without depending on a
+  live vector store or external LLM.
 - **Integration** — the LangGraph graph wired with fake/deterministic adapters, so the
   verify loop, escalation paths, and the `Degraded`/`Failed` transitions are tested
   without GPUs or LLM cost.

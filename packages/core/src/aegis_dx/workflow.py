@@ -6,6 +6,7 @@ import threading
 import uuid
 
 from aegis_dx.adapters import StubIngestionAdapter, StubTriageAdapter
+from aegis_dx.composition import StubReportAdapter, StubRetrievalAdapter, StubSynthesisAdapter
 from aegis_dx.domain import (
     ActorRole,
     AuditEvent,
@@ -27,7 +28,7 @@ from aegis_dx.domain import (
     UrgencyLevel,
     VerificationResult,
 )
-from aegis_dx.ports import IngestionPort, TriagePort
+from aegis_dx.ports import IngestionPort, ReportPort, RetrievalPort, SynthesisPort, TriagePort
 from aegis_dx.specialists import SpecialistRegistry, StubChestXRaySpecialistAdapter
 from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.event_schemas import get_event_schema
@@ -41,12 +42,18 @@ class WorkflowRuntime:
         ingestion: IngestionPort | None = None,
         triage: TriagePort | None = None,
         specialists: SpecialistRegistry | None = None,
+        retrieval: RetrievalPort | None = None,
+        synthesis: SynthesisPort | None = None,
+        reporter: ReportPort | None = None,
         worker_poll_interval_seconds: float = 0.05,
     ) -> None:
         self._store = store
         self._ingestion = ingestion or StubIngestionAdapter()
         self._triage = triage or StubTriageAdapter()
         self._specialists = specialists or SpecialistRegistry([StubChestXRaySpecialistAdapter()])
+        self._retrieval = retrieval or StubRetrievalAdapter()
+        self._synthesis = synthesis or StubSynthesisAdapter()
+        self._reporter = reporter or StubReportAdapter()
         self._worker_poll_interval_seconds = worker_poll_interval_seconds
         self._queue: Queue[str] = Queue()
         self._stop_event = threading.Event()
@@ -235,6 +242,22 @@ class WorkflowRuntime:
                     continue
 
                 if case.status == CaseStatus.TRIAGED:
+                    triage = TriageDecision(
+                        modality=case.modality or "unknown",
+                        region=case.region or "unknown",
+                        urgency=case.urgency,
+                    )
+                    case.evidence = self._retrieval.retrieve(case.artifact, triage)
+                    self._record_event(
+                        case,
+                        service_principal,
+                        "workflow.retrieved",
+                        payload={
+                            "status": case.status.value,
+                            "evidence_count": len(case.evidence),
+                            "modality": triage.modality,
+                        },
+                    )
                     case.status = CaseStatus.ANALYZING
                     self._transition(case, service_principal, "workflow.analysis_started")
                     continue
@@ -304,14 +327,32 @@ class WorkflowRuntime:
                     continue
 
                 if case.status == CaseStatus.SYNTHESIZED:
-                    case.differential = self._build_differential(case.findings)
-                    case.report = self._build_report(case)
+                    triage = TriageDecision(
+                        modality=case.modality or "unknown",
+                        region=case.region or "unknown",
+                        urgency=case.urgency,
+                    )
+                    case.differential = self._synthesis.synthesize(
+                        case.findings,
+                        case.evidence,
+                        triage,
+                    )
+                    case.report = self._reporter.compose(
+                        case.artifact,
+                        triage,
+                        case.findings,
+                        case.evidence,
+                        case.differential,
+                    )
                     case.status = CaseStatus.CALIBRATED
                     self._transition(
                         case,
                         service_principal,
                         "workflow.synthesized",
-                        payload={"differential": len(case.differential)},
+                        payload={
+                            "differential": len(case.differential),
+                            "evidence_count": len(case.evidence),
+                        },
                     )
                     continue
 
@@ -342,18 +383,32 @@ class WorkflowRuntime:
         event_type: str,
         payload: dict[str, object] | None = None,
     ) -> None:
+        self._record_event(
+            case,
+            principal,
+            event_type,
+            payload={"status": case.status.value, **(payload or {})},
+        )
+
+    def _record_event(
+        self,
+        case: CaseRecord,
+        principal: Principal,
+        event_type: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
         case.updated_at = datetime.now(timezone.utc)
         self._store.save_case(case)
         self._append_audit(
             case,
             event_type=event_type,
             principal=principal,
-            payload={"status": case.status.value, **(payload or {})},
+            payload=payload or {},
         )
         self._append_case_event(
             case,
             event_type=event_type,
-            payload={"status": case.status.value, **(payload or {})},
+            payload=payload or {},
         )
 
     def _append_audit(
@@ -413,33 +468,6 @@ class WorkflowRuntime:
                 )
             )
         return results
-
-    def _build_differential(self, findings: list[Finding]) -> list[DifferentialItem]:
-        if not findings:
-            return []
-        top_finding = findings[0]
-        label = top_finding.claim.replace("Possible ", "").replace(".", "")
-        return [
-            DifferentialItem(
-                diagnosis=label,
-                confidence=round(top_finding.probability, 2),
-                rationale=f"Derived from {top_finding.source_agent} at {top_finding.locus}.",
-            )
-        ]
-
-    def _build_report(self, case: CaseRecord) -> StructuredReport:
-        return StructuredReport(
-            summary=(
-                "Draft clinician review package prepared for "
-                f"{case.modality or 'unknown'} analysis."
-            ),
-            findings=[finding.claim for finding in case.findings],
-            evidence_links=[
-                finding.saliency_ref
-                for finding in case.findings
-                if finding.saliency_ref is not None
-            ],
-        )
 
     def _calibrate(self, case: CaseRecord) -> EscalationDecision:
         flagged = [item for item in case.verification if item.requires_escalation]

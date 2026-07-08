@@ -28,6 +28,12 @@ CASE_EVENT_SCHEMAS: dict[str, EventSchemaDefinition] = {
         description="Specialist analysis began.",
         required_payload_fields=["trace_id", "status"],
     ),
+    "workflow.retrieved": EventSchemaDefinition(
+        event_type="workflow.retrieved",
+        schema_version="1.0.0",
+        description="Supporting evidence retrieval completed for the case context.",
+        required_payload_fields=["trace_id", "status", "evidence_count", "modality"],
+    ),
     "workflow.analysis_completed": EventSchemaDefinition(
         event_type="workflow.analysis_completed",
         schema_version="1.0.0",

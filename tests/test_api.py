@@ -73,9 +73,13 @@ def test_case_submission_runs_through_async_workflow(tmp_path) -> None:
         case = wait_for_review(client, accepted["case_id"])
         assert case["modality"] == "chest_xray"
         assert case["artifact"]["de_identified"] is True
+        assert case["evidence"]
+        assert case["evidence"][0]["source_type"] in {"guideline", "reference-case"}
         assert "[redacted-id]" in case["artifact"]["de_identified_text"]
         assert "[redacted-email]" in case["artifact"]["de_identified_text"]
         assert case["report"]["disclaimer"].startswith("Research prototype only")
+        assert "with retrieved evidence support" in case["report"]["summary"]
+        assert any(link.startswith("guideline://") for link in case["report"]["evidence_links"])
 
         audit_response = client.get(
             f"/v1/cases/{accepted['case_id']}/audit",
@@ -95,6 +99,7 @@ def test_case_submission_runs_through_async_workflow(tmp_path) -> None:
         lifecycle_events = lifecycle_response.json()
         assert lifecycle_events[0]["schema_version"] == "1.0.0"
         assert lifecycle_events[0]["event_type"] == "case.submitted"
+        assert any(event["event_type"] == "workflow.retrieved" for event in lifecycle_events)
 
 
 def test_review_and_audit_log_are_recorded(tmp_path) -> None:
@@ -142,6 +147,11 @@ def test_review_and_audit_log_are_recorded(tmp_path) -> None:
             event["payload"].get("specialist_modality") == "chest_xray"
             for event in audit_events
             if event["event_type"] == "workflow.analysis_completed"
+        )
+        assert any(
+            event["payload"].get("evidence_count", 0) >= 1
+            for event in audit_events
+            if event["event_type"] == "workflow.retrieved"
         )
 
         previous_hash = None
@@ -254,5 +264,6 @@ def test_event_schema_registry_is_exposed(tmp_path) -> None:
         assert response.status_code == 200
         payload = response.json()
         assert any(item["event_type"] == "workflow.triaged" for item in payload)
+        assert any(item["event_type"] == "workflow.retrieved" for item in payload)
         triaged = next(item for item in payload if item["event_type"] == "workflow.triaged")
         assert "modality" in triaged["required_payload_fields"]

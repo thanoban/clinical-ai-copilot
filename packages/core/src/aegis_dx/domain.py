@@ -108,6 +108,14 @@ class Finding(BaseModel):
     saliency_ref: str | None = None
 
 
+class EvidenceSnippet(BaseModel):
+    source_id: str
+    title: str
+    snippet: str
+    source_type: str
+    uri: str | None = None
+
+
 class VerificationResult(BaseModel):
     claim: str
     agreement_score: float
@@ -151,6 +159,7 @@ class CaseRecord(BaseModel):
     modality: str | None = None
     region: str | None = None
     urgency: UrgencyLevel = UrgencyLevel.ROUTINE
+    evidence: list[EvidenceSnippet] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
     verification: list[VerificationResult] = Field(default_factory=list)
     differential: list[DifferentialItem] = Field(default_factory=list)

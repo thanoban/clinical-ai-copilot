@@ -69,7 +69,9 @@ the shell.
 
 The current walking skeleton now follows this shape directly: workflow analysis
 resolves a specialist by triaged modality through a registry, rather than embedding
-modality-specific logic in the workflow itself.
+modality-specific logic in the workflow itself. Retrieval, synthesis, and report
+generation are also now wired behind their own ports with stub adapters, so the
+workflow owns sequencing while adapters own content generation.
 
 ### Adapters (swappable implementations)
 

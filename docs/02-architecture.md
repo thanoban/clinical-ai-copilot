@@ -68,6 +68,10 @@ specialist, the orchestrator can re-query (different prompt, different model, or
 request additional evidence) before proceeding. This conditional edge is the heart
 of the graph.
 
+The current walking skeleton already reflects the same separation of concerns in a
+stub form: retrieval fills `evidence[]`, a specialist adapter produces `findings[]`,
+and synthesis/report adapters turn that into a clinician-facing draft.
+
 Every node runs with **timeouts, retries, and a circuit breaker**. If a specialist
 exhausts its retries the case moves to a **`Degraded`** state and reaches the
 clinician with an explicit "analysis unavailable" gap rather than a fabricated
