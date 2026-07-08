@@ -51,16 +51,22 @@ revised.)*
 free-text report grounding, feeding the `SpecialistPort` contract
 ([03](03-tech-stack.md)): `Finding[]` with `{claim, locus, probability}`.
 
-**Strategy — adapt, don't retrain from scratch:**
+**Strategy — adapt existing checkpoints, don't retrain from scratch:**
 - **Zero-shot / few-shot first pass** with **MedGemma 1.5** as the VLM specialist —
-  get the pipeline (steps 1–9) working end-to-end before any fine-tuning.
-- **Second opinion / verifier signal:** fine-tune a **CheXpert-pretrained CNN**
-  (DenseNet121 baseline is the standard, well-documented starting point) as a
-  *heterogeneous* second model — this is what the verifier ([D6](07-risks-decisions.md))
-  actually compares against, so it must be trained independently of MedGemma.
-- **Locus/grounding:** use Grad-CAM/saliency from the CNN and/or MedGemma's
+  pull [`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it)
+  directly and get the pipeline (steps 1–9) working end-to-end before any fine-tuning.
+- **Second opinion / verifier signal:** use the `torchxrayvision` project's
+  **already-trained** CheXpert/NIH DenseNet121 checkpoints —
+  [`torchxrayvision/densenet121-res224-chex`](https://huggingface.co/torchxrayvision/densenet121-res224-chex)
+  and [`-nih`](https://huggingface.co/torchxrayvision/densenet121-res224-nih) — as
+  the *heterogeneous* second model. This is a genuinely independent checkpoint from
+  MedGemma (different architecture, different training run), which is exactly what
+  the verifier ([D6](07-risks-decisions.md)) needs — no training required to get a
+  working critic signal; fine-tune only if its label set doesn't cover a finding you need.
+- **Locus/grounding:** use Grad-CAM/saliency from the DenseNet121 and/or MedGemma's
   attention/box output as the `saliency_ref` — needed for cross-modal grounding
   (novelty candidate, [05](05-roadmap.md)).
+- Full dataset/model links: [04 — Data & Models](04-data-models.md).
 
 **Split:** 80/10/10 train/val/test, patient-level, stratified by label prevalence
 (rare findings like "pneumothorax" need guaranteed presence in val/test).
@@ -91,11 +97,18 @@ segmentation masks), open with registration.
 **Task:** 3D segmentation (whole tumor / tumor core / enhancing tumor), feeding
 `Finding[]` with a **voxel-region locus**.
 
-**Strategy:** fine-tune **nnU-Net** (its self-configuring pipeline handles most
+**Strategy:** train **nnU-Net** (its self-configuring pipeline handles most
 preprocessing/architecture decisions automatically — do not hand-roll a 3D U-Net
-from scratch) on BraTS; use **MedSAM** for interactive/prompt-based refinement in
-the dashboard (a clinician can nudge a boundary, which re-prompts MedSAM rather
-than re-running the full segmentation).
+from scratch) on BraTS. **No ready-to-use pretrained BraTS checkpoint was found on
+the Hugging Face Hub at planning time** ([04](04-data-models.md)) — nnU-Net ships as
+a framework, not a hosted weights hub, so this is the primary imaging vertical that
+trains its own segmentation backbone rather than adapting one. For interactive
+refinement in the dashboard, use the **already-trained** MedSAM checkpoint —
+[`wanglab/medsam-vit-base`](https://huggingface.co/wanglab/medsam-vit-base) (or the
+`transformers`-native port [`flaviagiammarino/medsam-vit-base`](https://huggingface.co/flaviagiammarino/medsam-vit-base))
+or the newer [`wanglab/MedSAM2`](https://huggingface.co/wanglab/MedSAM2) — a
+clinician nudges a boundary, which re-prompts MedSAM rather than re-running the
+full nnU-Net segmentation.
 
 **Split:** patient-level 80/10/10 (BraTS ships an official train/val split — use it
 as the base, carve the additional test split from train if needed, never touch
@@ -120,18 +133,24 @@ nnU-Net BraTS paper numbers as the bar) before shadow deployment.
 
 ## Vertical 3 — ECG (PTB-XL)
 
-**Datasets:** PTB-XL (~21.8k 12-lead ECGs, ~18.9k patients, 10s recordings,
-PhysioNet DUA), MIT-BIH (48 half-hour annotated recordings, rhythm-focused).
+**Datasets:** PTB-XL — official source [PhysioNet PTB-XL](https://physionet.org/content/ptb-xl/)
+(~21.8k 12-lead ECGs, ~18.9k patients, 10s recordings); MIT-BIH — official source
+[PhysioNet MIT-BIH](https://physionet.org/content/mitdb/) (48 half-hour annotated
+recordings, rhythm-focused). Unofficial HF mirrors exist ([04](04-data-models.md))
+but **use the PhysioNet originals** for the official stratified folds referenced below.
 
 **Task:** 1D multi-label classification (PTB-XL's SCP-ECG statement hierarchy:
 normal / MI / STTC / conduction disturbance / hypertrophy) feeding `Finding[]`
 with a **lead + time-interval locus**.
 
-**Strategy — the one vertical trained closer to scratch:** no dominant open
-foundation model for 12-lead ECG yet, so train a **1D-CNN or CNN+transformer
-hybrid** directly on PTB-XL. Use **NeuroKit2** ([03](03-tech-stack.md)) for R-peak
-detection and beat segmentation as engineered features alongside the raw-signal
-model — a well-documented combination in the PTB-XL benchmarking literature.
+**Strategy — the one vertical trained from scratch:** no dominant pretrained
+foundation model for 12-lead ECG was found on Hugging Face at planning time
+([04](04-data-models.md)) — this is the exception to "adapt, don't retrain." Train a
+**1D-CNN or CNN+transformer hybrid** directly on PTB-XL. Use **NeuroKit2**
+([03](03-tech-stack.md)) for R-peak detection and beat segmentation as engineered
+features alongside the raw-signal model — a well-documented combination in the
+PTB-XL benchmarking literature. Re-check the Hub before starting this vertical in
+case a suitable ECG foundation model has since appeared.
 
 **Split:** PTB-XL ships **official stratified folds** (10-fold, patient-disjoint) —
 **use them as-is**; do not re-split. This also makes results directly comparable to
@@ -160,12 +179,15 @@ Phase 6+), following the same template as above (dataset → split discipline �
 preprocessing → loss/imbalance → metrics → compute → promotion gate). Placeholder
 strategy per [04](04-data-models.md):
 
-| Vertical | Strategy sketch |
-|----------|-----------------|
-| Lung CT | **CT-FM embeddings + lightweight detection head** — avoid full 3D retrain (same compute-cost mitigation as BraTS, but embedding-based here since CT-FM is pretrained for exactly this). |
-| Histopathology | **MIL (multiple-instance learning) over patches** from CAMELYON WSIs — patch-level foundation-model embeddings (MedGemma or a pathology FM) + a slide-level aggregator, not a from-scratch CNN over gigapixel images. |
-| Echo | **Echo-Vision-FM** fine-tuned for ejection-fraction regression + wall-motion classification on EchoNet-Dynamic. |
-| Dermatology | **MedGemma 1.5 zero-shot**, same pattern as CXR's first pass — evaluate before committing to any fine-tune. |
+| Vertical | Strategy sketch | Verified checkpoint (re-check before use) |
+|----------|-----------------|---------------------------------------------|
+| Lung CT | **CT-FM embeddings + lightweight detection head** — avoid full 3D retrain, embedding-based since CT-FM is pretrained for exactly this. | [`project-lighter/ct_fm_feature_extractor`](https://huggingface.co/project-lighter/ct_fm_feature_extractor), [`project-lighter/ct_fm_segresnet`](https://huggingface.co/project-lighter/ct_fm_segresnet) — official, ready to use |
+| Histopathology | **MIL (multiple-instance learning) over patches** from CAMELYON WSIs — patch-level foundation-model embeddings (MedGemma) + a slide-level aggregator, not a from-scratch CNN over gigapixel images. | No dedicated pathology FM verified on HF at planning time; use MedGemma ([`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it)) for patch embeddings and train only the MIL aggregator |
+| Echo | Ejection-fraction regression + wall-motion classification on EchoNet-Dynamic. | No verified Echo-Vision-FM checkpoint found on HF at planning time — **re-check when this vertical starts**; fall back to training a video model on EchoNet-Dynamic if nothing suitable exists |
+| Dermatology | **MedGemma 1.5 zero-shot**, same pattern as CXR's first pass — evaluate before committing to any fine-tune. | [`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it) — official, covers dermatology natively |
+
+Full dataset access details (official vs. unofficial mirrors) for these four
+verticals: [04 — Data & Models](04-data-models.md).
 
 ## Data-access plan (training-specific additions to [04](04-data-models.md))
 
