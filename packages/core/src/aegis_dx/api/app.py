@@ -17,6 +17,8 @@ from aegis_dx.domain import (
     Principal,
 )
 from aegis_dx.event_schemas import CASE_EVENT_SCHEMAS
+from aegis_dx.ports import CaseStorePort
+from aegis_dx.queueing import CaseQueuePort, InProcessCaseQueue
 from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.tracing import (
     CORRELATION_ID_HEADER,
@@ -27,7 +29,7 @@ from aegis_dx.tracing import (
 from aegis_dx.workflow import WorkflowRuntime
 
 
-def _build_store(settings: Settings):
+def _build_store(settings: Settings) -> CaseStorePort:
     if settings.database_url:
         from aegis_dx.postgres_store import PostgresCaseStore
 
@@ -35,10 +37,20 @@ def _build_store(settings: Settings):
     return SQLiteCaseStore(settings.database_path)
 
 
+def _build_queue(settings: Settings) -> CaseQueuePort:
+    if settings.redis_url:
+        from aegis_dx.queueing import RedisStreamCaseQueue
+
+        return RedisStreamCaseQueue(settings.redis_url)
+    return InProcessCaseQueue()
+
+
 def _build_runtime(settings: Settings) -> WorkflowRuntime:
     store = _build_store(settings)
+    case_queue = _build_queue(settings)
     return WorkflowRuntime(
         store=store,
+        case_queue=case_queue,
         worker_poll_interval_seconds=settings.worker_poll_interval_seconds,
     )
 

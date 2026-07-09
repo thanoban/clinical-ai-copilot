@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from queue import Empty, Queue
 import threading
 import uuid
 
@@ -34,6 +33,7 @@ from aegis_dx.ports import (
     TriagePort,
     VerificationPort,
 )
+from aegis_dx.queueing import CaseQueuePort, InProcessCaseQueue
 from aegis_dx.specialists import SpecialistRegistry, StubChestXRaySpecialistAdapter
 from aegis_dx.event_schemas import get_event_schema
 from aegis_dx.tracing import bind_correlation_id, get_correlation_id
@@ -52,6 +52,7 @@ class WorkflowRuntime:
         reporter: ReportPort | None = None,
         verifier: VerificationPort | None = None,
         guardrail: GuardrailPort | None = None,
+        case_queue: CaseQueuePort | None = None,
         worker_poll_interval_seconds: float = 0.05,
     ) -> None:
         self._store = store
@@ -64,7 +65,7 @@ class WorkflowRuntime:
         self._verifier = verifier or StubVerificationAdapter()
         self._guardrail = guardrail or StubGuardrailAdapter()
         self._worker_poll_interval_seconds = worker_poll_interval_seconds
-        self._queue: Queue[str] = Queue()
+        self._queue: CaseQueuePort = case_queue or InProcessCaseQueue()
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
 
@@ -87,7 +88,7 @@ class WorkflowRuntime:
             self._worker_thread.join(timeout=1.0)
 
     def enqueue(self, case_id: str) -> None:
-        self._queue.put(case_id)
+        self._queue.enqueue(case_id)
 
     def submit_case(
         self,
@@ -209,14 +210,13 @@ class WorkflowRuntime:
 
     def _run_worker(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                case_id = self._queue.get(timeout=self._worker_poll_interval_seconds)
-            except Empty:
+            case_id = self._queue.dequeue(timeout=self._worker_poll_interval_seconds)
+            if case_id is None:
                 continue
             try:
                 self._process_case(case_id)
             finally:
-                self._queue.task_done()
+                self._queue.ack(case_id)
 
     def _process_case(self, case_id: str) -> None:
         service_principal = Principal(

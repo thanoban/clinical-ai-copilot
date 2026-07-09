@@ -25,6 +25,9 @@ dev = [
 postgres = [
   "psycopg2-binary>=2.9,<3.0",
 ]
+redis = [
+  "redis>=5.0,<6.0",
+]
 
 [tool.setuptools]
 package-dir = {"" = "packages/core/src"}
