@@ -27,8 +27,16 @@ from aegis_dx.tracing import (
 from aegis_dx.workflow import WorkflowRuntime
 
 
+def _build_store(settings: Settings):
+    if settings.database_url:
+        from aegis_dx.postgres_store import PostgresCaseStore
+
+        return PostgresCaseStore(settings.database_url)
+    return SQLiteCaseStore(settings.database_path)
+
+
 def _build_runtime(settings: Settings) -> WorkflowRuntime:
-    store = SQLiteCaseStore(settings.database_path)
+    store = _build_store(settings)
     return WorkflowRuntime(
         store=store,
         worker_poll_interval_seconds=settings.worker_poll_interval_seconds,

@@ -9,6 +9,7 @@ import os
 class Settings:
     app_name: str
     database_path: Path
+    database_url: str | None
     worker_poll_interval_seconds: float
 
 
@@ -18,6 +19,7 @@ def load_settings() -> Settings:
     return Settings(
         app_name="Aegis-Dx API",
         database_path=database_path,
+        database_url=os.getenv("AEGIS_DX_DATABASE_URL"),
         worker_poll_interval_seconds=float(
             os.getenv("AEGIS_DX_WORKER_POLL_INTERVAL_SECONDS", "0.05")
         ),

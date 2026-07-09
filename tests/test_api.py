@@ -34,6 +34,7 @@ def create_client(tmp_path) -> TestClient:
     settings = Settings(
         app_name="Aegis-Dx Test API",
         database_path=tmp_path / "aegis_dx_test.db",
+        database_url=None,
         worker_poll_interval_seconds=0.01,
     )
     return TestClient(create_app(settings))

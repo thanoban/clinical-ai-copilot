@@ -24,9 +24,17 @@ from aegis_dx.domain import (
     TERMINAL_CASE_STATUSES,
     TriageDecision,
 )
-from aegis_dx.ports import GuardrailPort, IngestionPort, ReportPort, RetrievalPort, SynthesisPort, TriagePort, VerificationPort
+from aegis_dx.ports import (
+    CaseStorePort,
+    GuardrailPort,
+    IngestionPort,
+    ReportPort,
+    RetrievalPort,
+    SynthesisPort,
+    TriagePort,
+    VerificationPort,
+)
 from aegis_dx.specialists import SpecialistRegistry, StubChestXRaySpecialistAdapter
-from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.event_schemas import get_event_schema
 from aegis_dx.tracing import bind_correlation_id, get_correlation_id
 from aegis_dx.trust import StubGuardrailAdapter, StubVerificationAdapter
@@ -35,7 +43,7 @@ from aegis_dx.trust import StubGuardrailAdapter, StubVerificationAdapter
 class WorkflowRuntime:
     def __init__(
         self,
-        store: SQLiteCaseStore,
+        store: CaseStorePort,
         ingestion: IngestionPort | None = None,
         triage: TriagePort | None = None,
         specialists: SpecialistRegistry | None = None,
