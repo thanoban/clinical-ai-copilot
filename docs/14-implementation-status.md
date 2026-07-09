@@ -109,11 +109,24 @@ this snapshot as a point-in-time reference, not a permanent inventory.
   infra in this environment) as of this audit. ruff and mypy both clean.
 
 ### Clinician dashboard ([apps/web](../apps/web))
-A working React + TypeScript + Vite app exists with a case list, case detail view,
-findings/differential/evidence rendering, and a confirm/edit/reject review form
-gated on `status == AwaitingReview`. Present in the working tree; not reviewed
-line-by-line as part of this backend-focused round — verify independently before
-relying on this entry (frontend was explicitly out of scope for this pass).
+React + TypeScript + Vite app, rebuilt from scratch this round after the prior
+source was found missing from disk (never committed, no recoverable copy —
+see git history for `apps/web` if the full story matters). Matched by hand
+against the current backend API and domain models (`src/lib/types.ts` mirrors
+`domain.py`). Case list, case detail (overview, findings + verifier agreement,
+differential, evidence with links, case lifecycle timeline, audit trail),
+a case-submission form, and the confirm/edit/reject review form gated on
+`status === AwaitingReview`. The Vite dev server proxies `/v1` and `/healthz`
+to the backend so there's no CORS dependency in dev.
+
+**Verified two ways**, not just unit-tested: 6 component tests (mocked fetch)
+covering the detail view, review-locking, confirm submission, the
+edit-requires-summary rule, the role-specific 403 message on the audit log, and
+case submission — all green, clean `tsc -b`. Then a live end-to-end pass in an
+actual browser against a running backend: submitted a case through the UI,
+watched it process asynchronously through triage → analysis → verification →
+synthesis → calibration, reviewed and confirmed it, and inspected the real
+hash-chained audit trail under the reviewer role. No console errors.
 
 ## Fixed in an earlier audit pass (still holds)
 
@@ -138,7 +151,7 @@ Consistent with the "thicken later, don't retrofit" principle in
 | Observability | OpenTelemetry → Tempo/Jaeger, Prometheus/Grafana ([10](10-observability-mlops.md)) | Correlation IDs exist and propagate; no OTel export, metrics, or dashboards yet | Not started |
 | MLOps | Model registry, eval gates, shadow/canary ([10](10-observability-mlops.md)) | Not started — no model has been trained yet | Starts with [12 — Training Plan](12-training-plan.md) Vertical 1 |
 | Retrieval corpus | Vector DB (Qdrant/pgvector) over a real guideline corpus ([03](03-tech-stack.md)) | A few hand-written documents scored in-process | Real corpus + vector DB when RAG needs to scale past demo cases |
-| Additional verticals | 8 modalities ([01](01-vision-scope.md)) | 1 (`chest_xray`); `ecg` is recognized by triage but has no registered specialist (exercises the `Degraded` path on purpose in tests) | Per [05 — Roadmap](05-roadmap.md) Phase 6+ — frontend explicitly out of scope for the round that produced most of this table |
+| Additional verticals | 8 modalities ([01](01-vision-scope.md)) | 1 (`chest_xray`); `ecg` is recognized by triage but has no registered specialist (exercises the `Degraded` path on purpose in tests) | Per [05 — Roadmap](05-roadmap.md) Phase 6+ |
 
 ## What's genuinely next (not yet started, not a stand-in)
 
