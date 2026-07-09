@@ -9,19 +9,21 @@
 ## How this was verified
 
 Every claim below was checked by running the actual test suite
-(`pytest tests/ -q` → 16 passed) and reading the implementation against the port
-contracts in [03](03-tech-stack.md) and the agent build order in
+(`pytest tests/ -q` → 31 passed, 11 skipped) and reading the implementation
+against the port contracts in [03](03-tech-stack.md) and the agent build order in
 [13](13-agent-build-plan.md). This is a fast-moving codebase — another contributor
-is actively building it in parallel, so treat this snapshot as a point-in-time
-reference, not a permanent inventory.
+has been actively building it in parallel throughout this doc's history, so treat
+this snapshot as a point-in-time reference, not a permanent inventory.
 
 ## Finished
 
 ### Domain & ports (matches [03](03-tech-stack.md))
-- All ports from the plan are defined as real `Protocol` types in
+- All 10 ports from the plan are defined as real `Protocol` types in
   `packages/core/src/aegis_dx/ports.py`: `IngestionPort`, `TriagePort`,
   `SpecialistPort`, `RetrievalPort`, `SynthesisPort`, `ReportPort`,
-  `VerificationPort`, `GuardrailPort`, `AuditPort`, `IdentityPort`.
+  `VerificationPort`, `GuardrailPort`, `AuditPort`, `IdentityPort` — plus a newer
+  `CaseStorePort` structural protocol so `WorkflowRuntime` accepts SQLite or
+  Postgres interchangeably.
 - The `CaseRecord` state shape matches [02](02-architecture.md)'s state design:
   `case_id`, `trace_id`, `tenant_id`, `site_id`, `status`, `findings[]` (with
   `locus`, `probability`, `source_agent`, `model_version`, `saliency_ref`),
@@ -41,22 +43,42 @@ reference, not a permanent inventory.
 |-------|---------|-------|
 | Ingestion | `StubIngestionAdapter` | De-identifies MRN-shaped IDs and emails via regex. Real but intentionally minimal. |
 | Triage | `StubTriageAdapter` | Modality/region/urgency from MIME type + keyword rules. |
-| CXR specialist | `StubChestXRaySpecialistAdapter` | Keyword-based findings (pneumonia/effusion/normal), correctly shaped `Finding` objects with locus + saliency_ref. Not model-backed yet. |
+| **CXR specialist** | `ModelBackedChestXRaySpecialistAdapter` | **Now model-backed.** Calls a configurable HTTP endpoint (e.g. a hosted MedGemma deployment), validates the response, falls back to the keyword-based `StubChestXRaySpecialistAdapter` when unconfigured, on transport failure, on a malformed response, or when a working call returns zero findings. |
 | Retrieval / RAG | `StubRetrievalAdapter` | A small in-code guideline corpus, retrieved by modality/region match. |
 | Synthesis | `StubSynthesisAdapter` | Fuses findings + evidence into a ranked differential. |
-| Verifier/critic | `StubVerificationAdapter` | Rule-based — flags low confidence, missing evidence, tentative language; computes an independent `agreement_score`. Not yet a second model ([D6](07-risks-decisions.md)) — heterogeneous by construction (not an LLM at all yet) rather than by design. |
+| **Verifier/critic** | `ModelBackedVerificationAdapter` | **Now model-backed and enforced-heterogeneous.** Calls an independent, configurable critic endpoint; falls back to the rule-based `StubVerificationAdapter` under the same conditions as the specialist. `assert_heterogeneous_verifier()` runs at startup and **refuses to start** if the specialist and verifier are configured with the identical endpoint URL — D6 is now a hard guard, not just a convention. |
 | Guardrail | `StubGuardrailAdapter` | Escalates on STAT urgency, missing evidence, or accumulated verifier flags. |
 | Reporter | `StubReportAdapter` | Composes a structured summary + rendered findings + evidence links + the research-only disclaimer (hardcoded default). |
 | Orchestrator | `WorkflowRuntime` | The graph-equivalent — not LangGraph yet (see Gaps), but the sequencing and the `Degraded` resilience path are real and tested. |
+
+### Production infrastructure (new this round)
+- **Postgres**: `PostgresCaseStore` mirrors `SQLiteCaseStore`'s exact method
+  surface and hash-chained audit-log logic on real Postgres tables (`psycopg2`).
+  Selected automatically when `AEGIS_DX_DATABASE_URL` is set; SQLite remains the
+  dev/test default. `docker-compose.yml` provides a local Postgres for
+  development.
+- **Durable queue**: `CaseQueuePort` abstracts the workflow's dispatch queue.
+  `InProcessCaseQueue` (the prior `queue.Queue`, still the default) and
+  `RedisStreamCaseQueue` (Redis Streams + consumer group, XACK-on-completion for
+  at-least-once delivery) are both real implementations. Selected via
+  `AEGIS_DX_REDIS_URL`.
+- **Standalone worker**: `apps/worker/main.py` runs the same `WorkflowRuntime`
+  processing loop as its own process (`python -m apps.worker.main`) — with Redis
+  + Postgres configured, intake (the API) and processing (this worker) no longer
+  need to share a process, closing the biggest gap from [08](08-scalability-architecture.md).
+- **CI pipeline**: `.github/workflows/backend-ci.yml` runs ruff, mypy, and the
+  full pytest suite (including real Postgres + Redis service containers) on
+  every push/PR — the Definition of Done in [11](11-engineering-practices.md)
+  is now actually enforced, not just documented.
 
 ### Security & audit walking skeleton (per [09](09-security-identity-audit.md))
 - Header-based principal resolution (`X-Actor-Id` / `X-Actor-Role` / `X-Tenant-Id`)
   directly in `api/app.py`, gating each endpoint via `require_roles(...)`.
 - Tenant scoping enforced in `WorkflowRuntime.get_case` — a clinician cannot fetch
   another tenant's case (`PermissionError` on mismatch).
-- **Append-only, hash-chained audit log** — `SQLiteCaseStore.append_audit_event`
-  chains each entry's SHA-256 hash to the previous entry's hash, per case+tenant,
-  exactly as specified in [09](09-security-identity-audit.md).
+- **Append-only, hash-chained audit log** — chains each entry's SHA-256 hash to
+  the previous entry's hash, per case+tenant, in both `SQLiteCaseStore` and
+  `PostgresCaseStore`, exactly as specified in [09](09-security-identity-audit.md).
 - Case-lifecycle event log (separate from the audit log) with a **versioned event
   schema registry**, exposed at `/v1/event-schemas` and `/v1/cases/{id}/events` —
   matches [11](11-engineering-practices.md)'s API conventions section.
@@ -69,78 +91,68 @@ reference, not a permanent inventory.
 ### Test coverage
 - **8 of 10 ports have a shared contract test suite** in `tests/contracts/`:
   ingestion, triage, specialist, retrieval, synthesis, report, verification,
-  guardrail — wired up in `test_port_contracts.py`. This is the mechanism
-  [D14](07-risks-decisions.md) says should exist, and it exists. (`AuditPort` and
-  `IdentityPort` don't have a generic contract suite yet — reasonable, since only
-  one adapter exists for each today; nothing yet forces a second implementation to
-  prove the abstraction.)
+  guardrail — wired up in `test_port_contracts.py`. (`AuditPort` and
+  `IdentityPort` don't have a generic contract suite yet — only one adapter
+  exists for each today.)
 - `test_api.py` exercises the full state machine end-to-end: submission, triage,
   analysis, verification, synthesis, calibration, the degraded path, idempotent
-  replay, tenant isolation, and the audit/event trails.
-- 16 backend tests, all green as of this audit.
+  replay, tenant isolation, the audit/event trails, **and** the model-backed
+  specialist/verifier (configured, failure-fallback, and the heterogeneous-verifier
+  startup guard).
+- `test_model_backed_adapters.py` — 11 unit tests covering both new adapters in
+  isolation (well-formed response, transport failure, malformed response, empty
+  findings, no-op on empty input).
+- `test_postgres_store.py` / `test_redis_queue.py` — real (not mocked) integration
+  tests against actual Postgres/Redis, skip gracefully without local infra, run
+  for real in CI.
+- **31 backend tests passing, 11 skipping cleanly** (Postgres + Redis, no local
+  infra in this environment) as of this audit. ruff and mypy both clean.
 
 ### Clinician dashboard ([apps/web](../apps/web))
 A working React + TypeScript + Vite app exists with a case list, case detail view,
 findings/differential/evidence rendering, and a confirm/edit/reject review form
-gated on `status == AwaitingReview`. Present in the working tree; not yet reviewed
-line-by-line as part of this audit round — verify independently before relying on
-this entry.
+gated on `status == AwaitingReview`. Present in the working tree; not reviewed
+line-by-line as part of this backend-focused round — verify independently before
+relying on this entry (frontend was explicitly out of scope for this pass).
 
-## Fixed during this audit
+## Fixed in an earlier audit pass (still holds)
 
-**Degraded cases never reached the clinician with a report.** When no specialist
-was registered for a modality, or a specialist returned zero findings, the
-workflow set `status = Degraded` and an `escalation.reason`, but skipped report
-composition entirely — jumping straight to `AwaitingReview` with `report: null`.
-This contradicted [08](08-scalability-architecture.md)'s explicit requirement:
-*"if a specialist dies, the case does not fail silently — it reaches the clinician
-with an explicit 'analysis unavailable for X' flag."* The escalation reason was
-visible in the API response, but the report panel a clinician actually reads had
-nothing in it.
-
-**Fix:** both `Degraded`-triggering branches in `workflow.py` now build a
-`StructuredReport` (via a small `_degraded_report` helper) that states the
-modality and the exact reason before transitioning, so `case.report` is always
-populated by the time a case reaches `AwaitingReview`. (The existing `ReportPort.compose`
-signature doesn't carry an escalation reason through in this baseline, so rather
-than force that interface change under active concurrent development elsewhere in
-the same files, the degraded path builds its report directly — same outcome, no
-collision with in-flight port/composition work.) Added `report_ready`/`reason` to
-the `workflow.degraded` event schema and locked the behavior in with new
-assertions in `test_api.py`. 16 tests pass after the fix.
+**Degraded cases never reached the clinician with a report.** Fixed by building
+a `StructuredReport` directly in both `Degraded`-triggering branches in
+`workflow.py` before transitioning, so `case.report` is always populated. Locked
+in with test assertions. See git history (`git log --oneline -- workflow.py`) for
+the exact commit if you need the full narrative.
 
 ## Known gaps (intentional simplifications — "thin slice," not bugs)
 
 Consistent with the "thicken later, don't retrofit" principle in
-[08](08-scalability-architecture.md) and [05](05-roadmap.md). None of these need
-fixing before Phase 1–2 continues; listed so nobody mistakes "simplified" for
-"broken."
+[08](08-scalability-architecture.md) and [05](05-roadmap.md).
 
 | Gap | Plan says | Currently | Tracked as |
 |-----|-----------|-----------|------------|
-| Message broker / durable workflow engine | Redis Streams/RabbitMQ/Kafka + LangGraph Postgres checkpointer ([08](08-scalability-architecture.md)) | In-process `threading.Thread` + `queue.Queue`; no crash-resume across process restarts | Next scaling step |
-| Case/audit store | Postgres ([03](03-tech-stack.md)) | SQLite (`SQLiteCaseStore`) | Swap when multi-instance deployment starts |
-| Orchestration | LangGraph ([D5](07-risks-decisions.md)) | Hand-written `while` loop over `CaseStatus` in `WorkflowRuntime._process_case` | Same state machine shape; migrate the *engine*, not the *design* |
-| Identity | OIDC/SAML SSO ([09](09-security-identity-audit.md)) | Header-based principal read inline in `api/app.py` | Swap behind `IdentityPort` when real SSO lands |
-| Verifier heterogeneity | A genuinely different model/provider from the specialist ([D6](07-risks-decisions.md)) | `StubVerificationAdapter` is rule-based, not model-backed | Wire a second model per [12 — Training Plan](12-training-plan.md) Vertical 1 |
-| CXR specialist | MedGemma 1.5 ([04](04-data-models.md)) | `StubChestXRaySpecialistAdapter` is keyword-matching, not model-backed | Wire a real endpoint behind `SpecialistPort` |
-| `ReportPort.compose` signature | Report reflects verification + escalation state | Only takes `(artifact, triage, findings, evidence, differential)` — no verification/escalation input, which is why the degraded-report fix above builds its report outside the normal reporter call | Extend the signature once the concurrent in-flight work on `composition.py`/`ports.py` settles |
+| Orchestration engine | LangGraph ([D5](07-risks-decisions.md)) | Hand-written `while` loop over `CaseStatus` in `WorkflowRuntime._process_case`, now dispatching through `CaseQueuePort` | Same state machine shape; migrate the *engine*, not the *design* |
+| Crash-durability of in-flight state | Durable checkpointing ([08](08-scalability-architecture.md)) | The queue (Redis) and store (Postgres) are now durable, but there's no mid-case checkpoint — a worker crash mid-`_process_case` re-runs from the last saved `CaseStatus`, not a finer-grained resume point | Acceptable for now (idempotent-ish per state transition); revisit if a step becomes expensive to re-run |
+| Identity | OIDC/SAML SSO ([09](09-security-identity-audit.md)) | Header-based principal read inline in `api/app.py` | Swap behind `IdentityPort` when real SSO lands — the port already exists |
+| Real endpoints configured | MedGemma 1.5 + a real critic model both live ([04](04-data-models.md), [D6](07-risks-decisions.md)) | The adapters are real and tested; no live `AEGIS_DX_CXR_SPECIALIST_ENDPOINT_URL` / `AEGIS_DX_VERIFIER_ENDPOINT_URL` is actually pointed at a running model yet | Point the env vars at a real deployment — no code change needed |
+| `ReportPort.compose` signature | Report reflects verification + escalation state | Only takes `(artifact, triage, findings, evidence, differential)` — no verification/escalation input | Extend once safe to touch without colliding with other in-flight work on `composition.py` |
 | Observability | OpenTelemetry → Tempo/Jaeger, Prometheus/Grafana ([10](10-observability-mlops.md)) | Correlation IDs exist and propagate; no OTel export, metrics, or dashboards yet | Not started |
 | MLOps | Model registry, eval gates, shadow/canary ([10](10-observability-mlops.md)) | Not started — no model has been trained yet | Starts with [12 — Training Plan](12-training-plan.md) Vertical 1 |
 | Retrieval corpus | Vector DB (Qdrant/pgvector) over a real guideline corpus ([03](03-tech-stack.md)) | A few hand-written documents scored in-process | Real corpus + vector DB when RAG needs to scale past demo cases |
-| Additional verticals | 8 modalities ([01](01-vision-scope.md)) | 1 (`chest_xray`); `ecg` is recognized by triage but has no registered specialist (exercises the `Degraded` path on purpose in tests) | Per [05 — Roadmap](05-roadmap.md) Phase 6+ |
+| Additional verticals | 8 modalities ([01](01-vision-scope.md)) | 1 (`chest_xray`); `ecg` is recognized by triage but has no registered specialist (exercises the `Degraded` path on purpose in tests) | Per [05 — Roadmap](05-roadmap.md) Phase 6+ — frontend explicitly out of scope for the round that produced most of this table |
 
 ## What's genuinely next (not yet started, not a stand-in)
 
-- **CI pipeline** — no `.github/workflows/` or equivalent found. Tests exist and
-  pass locally; nothing runs them automatically yet. Highest-leverage next step
-  per [11](11-engineering-practices.md)'s Definition of Done.
 - **Second specialist/vertical** — the real test of the hexagonal promise
   ([D3](07-risks-decisions.md), [D14](07-risks-decisions.md)) is adding one without
   touching `WorkflowRuntime`. Nothing has exercised that yet; `ecg` in triage is a
   placeholder, not a second adapter.
-- **Real MedGemma / verifier model wiring** — no live model endpoint configured
-  for either the specialist or the verifier yet.
-- **This codebase is being actively developed by more than one contributor right
-  now.** Before trusting this doc, re-run `pytest tests/ -q` and diff the port
-  files against what's described here — it may already be stale.
+- **Point the model endpoints at something real** — the specialist and verifier
+  adapters are production-shaped; they just don't have a live model behind them
+  yet. This is now a config/deployment task, not a code task.
+- **Local verification of Postgres/Redis was not possible in this environment**
+  (Docker Desktop's engine wasn't running, no reachable local Postgres) — CI is
+  the first real end-to-end run against both. Check the Actions tab before
+  trusting the Postgres/Redis paths in a new environment.
+- **This codebase has been actively developed by more than one contributor.**
+  Before trusting this doc, re-run `pytest tests/ -q` and diff the port files
+  against what's described here — it may already be stale.
