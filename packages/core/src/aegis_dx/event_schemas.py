@@ -44,7 +44,7 @@ CASE_EVENT_SCHEMAS: dict[str, EventSchemaDefinition] = {
         event_type="workflow.degraded",
         schema_version="1.0.0",
         description="Case entered degraded mode due to failed or unavailable analysis.",
-        required_payload_fields=["trace_id", "status"],
+        required_payload_fields=["trace_id", "status", "reason", "report_ready"],
     ),
     "workflow.verification_completed": EventSchemaDefinition(
         event_type="workflow.verification_completed",

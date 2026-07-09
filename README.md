@@ -1,6 +1,7 @@
 # Aegis-Dx — Multi-Agent Multimodal Diagnostic Copilot
 
-> **Status:** Planning · **Type:** Startup product MVP · **First vertical:** Chest X-ray + report
+> **Status:** Walking skeleton in progress (Phase 0–2) · **Type:** Startup product MVP · **First vertical:** Chest X-ray + report
+> See [docs/14 — Implementation Status](docs/14-implementation-status.md) for what's actually built vs. planned.
 
 Ingest any medical artifact (image + report + signal), route it to specialist
 agents, cross-verify their claims with a heterogeneous critic, and return a
@@ -70,6 +71,7 @@ adding vertical #2 must not require touching the orchestrator.
 | [11 — Engineering Practices](docs/11-engineering-practices.md) | Test pyramid + contract tests, CI/CD, environments, IaC, API conventions, IEC 62304 |
 | [12 — Training Plan](docs/12-training-plan.md) | Per-vertical training recipe: splits, preprocessing, loss/imbalance, metrics, compute, promotion gates |
 | [13 — Agent Build Plan](docs/13-agent-build-plan.md) | Build order for every agent in the roster, I/O contracts, prompt strategy, acceptance/contract tests |
+| [14 — Implementation Status](docs/14-implementation-status.md) | What's actually built and verified vs. the plan, known gaps, what's genuinely next |
 
 ## Novelty candidates (pick one to lead with)
 

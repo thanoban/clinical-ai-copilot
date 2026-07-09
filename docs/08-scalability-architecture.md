@@ -61,6 +61,15 @@ stateless** (scale horizontally on RPS); **specialist workers scale on queue dep
 **workflow engine** is durable so a worker crash resumes from the last checkpoint,
 not from zero.
 
+**Current walking-skeleton implementation:** the in-process stand-in is a single
+Python `threading.Thread` consuming an in-memory `queue.Queue`, running inside the
+FastAPI process, with `SQLiteCaseStore` as the case/audit store — not yet a separate
+message broker, a distributed workflow engine, or Postgres. This satisfies the
+"thin slice of every concern" principle (a queue and a worker both exist and the
+state machine below is real) without yet being horizontally scalable or
+crash-durable across process restarts. Tracked in
+[14 — Implementation Status](14-implementation-status.md).
+
 ## Case lifecycle — the state machine
 
 A case is an event-sourced entity. Every transition emits an event (to the audit log

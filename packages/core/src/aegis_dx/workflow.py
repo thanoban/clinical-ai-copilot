@@ -21,6 +21,7 @@ from aegis_dx.domain import (
     HumanReviewRecord,
     Principal,
     PROCESSABLE_CASE_STATUSES,
+    StructuredReport,
     TERMINAL_CASE_STATUSES,
     TriageDecision,
     VerificationResult,
@@ -272,11 +273,16 @@ class WorkflowRuntime:
                             required=True,
                             reason=f"No specialist is registered for modality '{case.modality}'.",
                         )
+                        case.report = self._degraded_report(case.modality, case.escalation.reason)
                         self._transition(
                             case,
                             service_principal,
                             "workflow.degraded",
-                            payload={"reason": case.escalation.reason, "modality": case.modality},
+                            payload={
+                                "reason": case.escalation.reason,
+                                "modality": case.modality,
+                                "report_ready": case.report is not None,
+                            },
                         )
                     else:
                         triage = TriageDecision(
@@ -294,6 +300,7 @@ class WorkflowRuntime:
                                     "this artifact."
                                 ),
                             )
+                            case.report = self._degraded_report(case.modality, case.escalation.reason)
                             self._transition(
                                 case,
                                 service_principal,
@@ -302,6 +309,7 @@ class WorkflowRuntime:
                                     "reason": case.escalation.reason,
                                     "modality": case.modality,
                                     "specialist_modality": specialist.modality,
+                                    "report_ready": case.report is not None,
                                 },
                             )
                         else:
@@ -396,6 +404,14 @@ class WorkflowRuntime:
                     continue
 
         self._store.save_case(case)
+
+    def _degraded_report(self, modality: str | None, reason: str | None) -> StructuredReport:
+        summary = (
+            f"Analysis unavailable for {modality or 'this case'}: "
+            f"{reason or 'no specialist findings could be produced.'} "
+            "This case has been routed for direct clinician review."
+        )
+        return StructuredReport(summary=summary)
 
     def _transition(
         self,

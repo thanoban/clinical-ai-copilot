@@ -247,6 +247,9 @@ def test_unsupported_modality_degrades_transparently(tmp_path) -> None:
         assert case["escalation"]["required"] is True
         assert "No specialist is registered for modality 'ecg'." == case["escalation"]["reason"]
         assert case["findings"] == []
+        assert case["report"] is not None
+        assert "No specialist is registered for modality 'ecg'." in case["report"]["summary"]
+        assert case["report"]["disclaimer"]
 
         events_response = client.get(
             f"/v1/cases/{case_id}/events",
@@ -257,6 +260,7 @@ def test_unsupported_modality_degrades_transparently(tmp_path) -> None:
             event for event in events_response.json() if event["event_type"] == "workflow.degraded"
         )
         assert degraded_event["payload"]["modality"] == "ecg"
+        assert degraded_event["payload"]["report_ready"] is True
 
 
 def test_low_confidence_case_is_escalated_by_guardrail(tmp_path) -> None:
