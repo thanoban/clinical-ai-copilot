@@ -16,7 +16,6 @@ from aegis_dx.domain import (
     CaseStatus,
     CaseSubmissionRequest,
     EscalationDecision,
-    Finding,
     HumanAction,
     HumanReviewRecord,
     Principal,
@@ -24,7 +23,6 @@ from aegis_dx.domain import (
     StructuredReport,
     TERMINAL_CASE_STATUSES,
     TriageDecision,
-    VerificationResult,
 )
 from aegis_dx.ports import GuardrailPort, IngestionPort, ReportPort, RetrievalPort, SynthesisPort, TriagePort, VerificationPort
 from aegis_dx.specialists import SpecialistRegistry, StubChestXRaySpecialistAdapter

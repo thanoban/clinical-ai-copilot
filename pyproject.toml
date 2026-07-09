@@ -18,6 +18,8 @@ dependencies = [
 dev = [
   "httpx>=0.27,<1.0",
   "pytest>=8.2,<9.0",
+  "ruff>=0.6,<1.0",
+  "mypy>=1.11,<2.0",
 ]
 
 [tool.setuptools]
@@ -28,4 +30,17 @@ where = ["packages/core/src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
 
