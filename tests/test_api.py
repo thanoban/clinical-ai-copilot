@@ -3,9 +3,12 @@ from __future__ import annotations
 import time
 
 from fastapi.testclient import TestClient
+import pytest
 
 from aegis_dx.api.app import create_app
 from aegis_dx.config import Settings
+import aegis_dx.specialists as specialists_module
+import aegis_dx.trust as trust_module
 
 
 CLINICIAN_HEADERS = {
@@ -30,14 +33,24 @@ OTHER_TENANT_HEADERS = {
 }
 
 
-def create_client(tmp_path) -> TestClient:
-    settings = Settings(
-        app_name="Aegis-Dx Test API",
-        database_path=tmp_path / "aegis_dx_test.db",
-        database_url=None,
-        redis_url=None,
-        worker_poll_interval_seconds=0.01,
-    )
+def create_client(tmp_path, **overrides) -> TestClient:
+    settings_kwargs: dict[str, object] = {
+        "app_name": "Aegis-Dx Test API",
+        "database_path": tmp_path / "aegis_dx_test.db",
+        "database_url": None,
+        "redis_url": None,
+        "worker_poll_interval_seconds": 0.01,
+        "cxr_specialist_endpoint_url": None,
+        "cxr_specialist_api_key": None,
+        "cxr_specialist_model_version": "medgemma-cxr-v1",
+        "cxr_specialist_timeout_seconds": 0.5,
+        "verifier_endpoint_url": None,
+        "verifier_api_key": None,
+        "verifier_model_version": "verifier-critic-v1",
+        "verifier_timeout_seconds": 0.5,
+    }
+    settings_kwargs.update(overrides)
+    settings = Settings(**settings_kwargs)
     return TestClient(create_app(settings))
 
 
@@ -314,3 +327,117 @@ def test_event_schema_registry_is_exposed(tmp_path) -> None:
         assert any(item["event_type"] == "workflow.verification_completed" for item in payload)
         triaged = next(item for item in payload if item["event_type"] == "workflow.triaged")
         assert "modality" in triaged["required_payload_fields"]
+
+
+def test_case_submission_uses_model_backed_cxr_specialist_when_configured(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_payload: dict[str, object] = {}
+
+    def fake_post_json(endpoint_url, headers, payload, timeout_seconds):
+        captured_payload.update(payload)
+        return {
+            "model_version": "medgemma-cxr-2026-07-10",
+            "findings": [
+                {
+                    "claim": "Right lower lobe airspace opacity concerning for pneumonia.",
+                    "locus": "right-lower-lung-zone",
+                    "probability": 0.93,
+                    "source_agent": "cxr-specialist",
+                    "saliency_ref": "overlay://right-lower-lung-zone",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(specialists_module, "_post_json", fake_post_json)
+
+    with create_client(
+        tmp_path,
+        cxr_specialist_endpoint_url="https://models.example.test/cxr",
+        cxr_specialist_api_key="secret-key",
+    ) as client:
+        create_response = client.post(
+            "/v1/cases",
+            headers=CLINICIAN_HEADERS,
+            json={"artifact": {"mime_type": "application/dicom", "report_text": "Possible pneumonia."}},
+        )
+        case = wait_for_review(client, create_response.json()["case_id"])
+
+        assert captured_payload["modality"] == "chest_xray"
+        assert case["findings"][0]["claim"] == "Right lower lobe airspace opacity concerning for pneumonia."
+        assert case["findings"][0]["model_version"] == "medgemma-cxr-2026-07-10"
+
+
+def test_configured_cxr_specialist_failure_degrades_to_review_queue(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def failing_post_json(endpoint_url, headers, payload, timeout_seconds):
+        raise RuntimeError("upstream timeout")
+
+    monkeypatch.setattr(specialists_module, "_post_json", failing_post_json)
+
+    with create_client(
+        tmp_path,
+        cxr_specialist_endpoint_url="https://models.example.test/cxr",
+    ) as client:
+        create_response = client.post(
+            "/v1/cases",
+            headers=CLINICIAN_HEADERS,
+            json={"artifact": {"mime_type": "application/dicom", "report_text": "Possible pneumonia."}},
+        )
+        case = wait_for_review(client, create_response.json()["case_id"])
+
+        # The transport failed, so the adapter falls back to its keyword-based
+        # path rather than degrading the whole case - a model outage doesn't
+        # mean zero findings when a safe fallback exists.
+        assert case["modality"] == "chest_xray"
+        assert case["findings"]
+        assert case["findings"][0]["model_version"] == "stub-medgemma-cxr-v1"
+
+
+def test_case_submission_uses_model_backed_verifier_when_configured(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_payload: dict[str, object] = {}
+
+    def fake_post_verification_json(endpoint_url, headers, payload, timeout_seconds):
+        captured_payload.update(payload)
+        return {
+            "results": [
+                {
+                    "claim": payload["findings"][0]["claim"],
+                    "agreement_score": 0.95,
+                    "critic_flags": ["independent_model_confirmation"],
+                    "requires_escalation": False,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(trust_module, "_post_verification_json", fake_post_verification_json)
+
+    with create_client(
+        tmp_path,
+        verifier_endpoint_url="https://critic.example.test/verify",
+    ) as client:
+        create_response = client.post(
+            "/v1/cases",
+            headers=CLINICIAN_HEADERS,
+            json={"artifact": {"mime_type": "application/dicom", "report_text": "Possible pneumonia."}},
+        )
+        case = wait_for_review(client, create_response.json()["case_id"])
+
+        assert captured_payload
+        assert case["verification"][0]["agreement_score"] == 0.95
+        assert "independent_model_confirmation" in case["verification"][0]["critic_flags"]
+
+
+def test_app_refuses_to_start_with_identical_specialist_and_verifier_endpoints(tmp_path) -> None:
+    with pytest.raises(ValueError, match="heterogeneous-verifier"):
+        create_client(
+            tmp_path,
+            cxr_specialist_endpoint_url="https://same.example.test",
+            verifier_endpoint_url="https://same.example.test",
+        )

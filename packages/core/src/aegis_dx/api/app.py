@@ -19,6 +19,7 @@ from aegis_dx.domain import (
 from aegis_dx.event_schemas import CASE_EVENT_SCHEMAS
 from aegis_dx.ports import CaseStorePort
 from aegis_dx.queueing import CaseQueuePort, InProcessCaseQueue
+from aegis_dx.specialists import ModelBackedChestXRaySpecialistAdapter, SpecialistRegistry
 from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.tracing import (
     CORRELATION_ID_HEADER,
@@ -26,6 +27,7 @@ from aegis_dx.tracing import (
     reset_correlation_id,
     set_correlation_id,
 )
+from aegis_dx.trust import ModelBackedVerificationAdapter, assert_heterogeneous_verifier
 from aegis_dx.workflow import WorkflowRuntime
 
 
@@ -46,11 +48,33 @@ def _build_queue(settings: Settings) -> CaseQueuePort:
 
 
 def _build_runtime(settings: Settings) -> WorkflowRuntime:
+    assert_heterogeneous_verifier(
+        settings.cxr_specialist_endpoint_url,
+        settings.verifier_endpoint_url,
+    )
     store = _build_store(settings)
     case_queue = _build_queue(settings)
+    specialists = SpecialistRegistry(
+        [
+            ModelBackedChestXRaySpecialistAdapter(
+                endpoint_url=settings.cxr_specialist_endpoint_url,
+                api_key=settings.cxr_specialist_api_key,
+                model_version=settings.cxr_specialist_model_version,
+                request_timeout_seconds=settings.cxr_specialist_timeout_seconds,
+            )
+        ]
+    )
+    verifier = ModelBackedVerificationAdapter(
+        endpoint_url=settings.verifier_endpoint_url,
+        api_key=settings.verifier_api_key,
+        model_version=settings.verifier_model_version,
+        request_timeout_seconds=settings.verifier_timeout_seconds,
+    )
     return WorkflowRuntime(
         store=store,
         case_queue=case_queue,
+        specialists=specialists,
+        verifier=verifier,
         worker_poll_interval_seconds=settings.worker_poll_interval_seconds,
     )
 

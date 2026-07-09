@@ -12,6 +12,14 @@ class Settings:
     database_url: str | None
     redis_url: str | None
     worker_poll_interval_seconds: float
+    cxr_specialist_endpoint_url: str | None
+    cxr_specialist_api_key: str | None
+    cxr_specialist_model_version: str
+    cxr_specialist_timeout_seconds: float
+    verifier_endpoint_url: str | None
+    verifier_api_key: str | None
+    verifier_model_version: str
+    verifier_timeout_seconds: float
 
 
 def load_settings() -> Settings:
@@ -25,5 +33,17 @@ def load_settings() -> Settings:
         worker_poll_interval_seconds=float(
             os.getenv("AEGIS_DX_WORKER_POLL_INTERVAL_SECONDS", "0.05")
         ),
+        cxr_specialist_endpoint_url=os.getenv("AEGIS_DX_CXR_SPECIALIST_ENDPOINT_URL"),
+        cxr_specialist_api_key=os.getenv("AEGIS_DX_CXR_SPECIALIST_API_KEY"),
+        cxr_specialist_model_version=os.getenv(
+            "AEGIS_DX_CXR_SPECIALIST_MODEL_VERSION", "medgemma-cxr-v1"
+        ),
+        cxr_specialist_timeout_seconds=float(
+            os.getenv("AEGIS_DX_CXR_SPECIALIST_TIMEOUT_SECONDS", "8.0")
+        ),
+        verifier_endpoint_url=os.getenv("AEGIS_DX_VERIFIER_ENDPOINT_URL"),
+        verifier_api_key=os.getenv("AEGIS_DX_VERIFIER_API_KEY"),
+        verifier_model_version=os.getenv("AEGIS_DX_VERIFIER_MODEL_VERSION", "verifier-critic-v1"),
+        verifier_timeout_seconds=float(os.getenv("AEGIS_DX_VERIFIER_TIMEOUT_SECONDS", "8.0")),
     )
 
