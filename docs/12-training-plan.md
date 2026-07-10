@@ -7,6 +7,11 @@ model-lifecycle rules in [10 — Observability & MLOps](10-observability-mlops.m
 (registry, eval-as-CI-gate, shadow → canary → promote). Nothing here trains a model
 that skips that lifecycle.
 
+**Runnable Kaggle notebooks** for the components that genuinely need training
+(as opposed to using a pretrained checkpoint as-is) live in
+[notebooks/kaggle/](../notebooks/kaggle/) — one notebook per component below,
+cell-by-cell commented against this doc's own reasoning.
+
 ## Cross-cutting training principles (apply to every vertical)
 
 1. **Patient-level splits, always.** Split by `patient_id`, never by image/study. A
@@ -91,6 +96,10 @@ prior) on every label and show no subgroup AUROC regression > a set tolerance
 
 ## Vertical 2 — Brain MRI (BraTS)
 
+**Kaggle notebook:** [03_brain_mri_nnunet_training.ipynb](../notebooks/kaggle/03_brain_mri_nnunet_training.ipynb)
+— read its "3D compute cost" caveat before running; it trains one fold as a
+pipeline smoke test, not a publication-grade result.
+
 **Dataset:** BraTS (multi-modal MRI: T1, T1ce, T2, FLAIR; tumor sub-region
 segmentation masks), open with registration.
 
@@ -132,6 +141,9 @@ specifically, not the always-on CXR budget.
 nnU-Net BraTS paper numbers as the bar) before shadow deployment.
 
 ## Vertical 3 — ECG (PTB-XL)
+
+**Kaggle notebook:** [01_ecg_ptbxl_training.ipynb](../notebooks/kaggle/01_ecg_ptbxl_training.ipynb)
+— trains the 1D-CNN below end-to-end on a single GPU in a few hours.
 
 **Datasets:** PTB-XL — official source [PhysioNet PTB-XL](https://physionet.org/content/ptb-xl/)
 (~21.8k 12-lead ECGs, ~18.9k patients, 10s recordings); MIT-BIH — official source
@@ -182,8 +194,8 @@ strategy per [04](04-data-models.md):
 | Vertical | Strategy sketch | Verified checkpoint (re-check before use) |
 |----------|-----------------|---------------------------------------------|
 | Lung CT | **CT-FM embeddings + lightweight detection head** — avoid full 3D retrain, embedding-based since CT-FM is pretrained for exactly this. | [`project-lighter/ct_fm_feature_extractor`](https://huggingface.co/project-lighter/ct_fm_feature_extractor), [`project-lighter/ct_fm_segresnet`](https://huggingface.co/project-lighter/ct_fm_segresnet) — official, ready to use |
-| Histopathology | **MIL (multiple-instance learning) over patches** from CAMELYON WSIs — patch-level foundation-model embeddings (MedGemma) + a slide-level aggregator, not a from-scratch CNN over gigapixel images. | No dedicated pathology FM verified on HF at planning time; use MedGemma ([`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it)) for patch embeddings and train only the MIL aggregator |
-| Echo | Ejection-fraction regression + wall-motion classification on EchoNet-Dynamic. | No verified Echo-Vision-FM checkpoint found on HF at planning time — **re-check when this vertical starts**; fall back to training a video model on EchoNet-Dynamic if nothing suitable exists |
+| Histopathology | **MIL (multiple-instance learning) over patches** from CAMELYON WSIs — patch-level foundation-model embeddings (MedGemma) + a slide-level aggregator, not a from-scratch CNN over gigapixel images. Notebook: [02_pathology_mil_training.ipynb](../notebooks/kaggle/02_pathology_mil_training.ipynb). | No dedicated pathology FM verified on HF at planning time; use MedGemma ([`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it)) for patch embeddings and train only the MIL aggregator |
+| Echo | Ejection-fraction regression + wall-motion classification on EchoNet-Dynamic. Notebook: [04_echo_ef_training.ipynb](../notebooks/kaggle/04_echo_ef_training.ipynb) (EF regression only — wall-motion is a separate head, not yet built). | No verified Echo-Vision-FM checkpoint found on HF at planning time — **re-check when this vertical starts**; fall back to training a video model on EchoNet-Dynamic if nothing suitable exists |
 | Dermatology | **MedGemma 1.5 zero-shot**, same pattern as CXR's first pass — evaluate before committing to any fine-tune. | [`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it) — official, covers dermatology natively |
 
 Full dataset access details (official vs. unofficial mirrors) for these four
