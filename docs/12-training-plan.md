@@ -7,10 +7,11 @@ model-lifecycle rules in [10 — Observability & MLOps](10-observability-mlops.m
 (registry, eval-as-CI-gate, shadow → canary → promote). Nothing here trains a model
 that skips that lifecycle.
 
-**Runnable Kaggle notebooks** for the components that genuinely need training
-(as opposed to using a pretrained checkpoint as-is) live in
-[notebooks/kaggle/](../notebooks/kaggle/) — one notebook per component below,
-cell-by-cell commented against this doc's own reasoning.
+**Runnable notebooks** for the components that genuinely need training (as
+opposed to using a pretrained checkpoint as-is) live in
+[notebooks/kaggle/](../notebooks/kaggle/) and, for Google Colab,
+[notebooks/colab/](../notebooks/colab/) — one notebook per component below on
+each platform, cell-by-cell commented against this doc's own reasoning.
 
 ## Cross-cutting training principles (apply to every vertical)
 

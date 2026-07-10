@@ -5,6 +5,10 @@ that need training rather than an off-the-shelf checkpoint. See
 [docs/04-data-models.md](../../docs/04-data-models.md) for which checkpoints
 need *no* training at all (MedGemma, torchxrayvision, MedSAM/MedSAM2, CT-FM).
 
+**Prefer Google Colab instead?** Same models, same training/eval code — see
+[../colab/](../colab/) for the ported versions (Drive-based persistence,
+different dataset-acquisition steps since Colab has no "Add Data" mount).
+
 | Notebook | Vertical | Training type | Kaggle GPU budget |
 |----------|----------|----------------|--------------------|
 | [01_ecg_ptbxl_training.ipynb](01_ecg_ptbxl_training.ipynb) | ECG | From scratch (the one genuine gap) | Single GPU, a few hours |
