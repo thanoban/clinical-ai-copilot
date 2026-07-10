@@ -44,8 +44,11 @@ jobs:
           python-version: "3.13"
           cache: "pip"
 
+      - name: Install CPU-only torch (avoids the multi-GB CUDA wheel on CI runners)
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
       - name: Install package + dev dependencies
-        run: python -m pip install -e ".[dev,postgres,redis]"
+        run: python -m pip install -e ".[dev,postgres,redis,imaging]"
 
       - name: Lint (ruff)
         run: python -m ruff check packages/core/src/aegis_dx tests apps/api

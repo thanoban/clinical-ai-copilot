@@ -40,6 +40,7 @@ def create_client(tmp_path, **overrides) -> TestClient:
         "database_url": None,
         "redis_url": None,
         "worker_poll_interval_seconds": 0.01,
+        "cxr_specialist_backend": "http",
         "cxr_specialist_endpoint_url": None,
         "cxr_specialist_api_key": None,
         "cxr_specialist_model_version": "medgemma-cxr-v1",

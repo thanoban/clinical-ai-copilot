@@ -28,6 +28,10 @@ postgres = [
 redis = [
   "redis>=5.0,<6.0",
 ]
+imaging = [
+  "torch>=2.2,<3.0",
+  "torchxrayvision>=1.2,<2.0",
+]
 
 [tool.setuptools]
 package-dir = {"" = "packages/core/src"}
@@ -50,4 +54,8 @@ python_version = "3.13"
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["torchxrayvision", "torchxrayvision.*", "skimage", "skimage.*"]
+ignore_missing_imports = true
 

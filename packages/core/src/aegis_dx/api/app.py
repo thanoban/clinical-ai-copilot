@@ -17,9 +17,13 @@ from aegis_dx.domain import (
     Principal,
 )
 from aegis_dx.event_schemas import CASE_EVENT_SCHEMAS
-from aegis_dx.ports import CaseStorePort
+from aegis_dx.ports import CaseStorePort, SpecialistPort
 from aegis_dx.queueing import CaseQueuePort, InProcessCaseQueue
-from aegis_dx.specialists import ModelBackedChestXRaySpecialistAdapter, SpecialistRegistry
+from aegis_dx.specialists import (
+    HFTorchXRayVisionSpecialistAdapter,
+    ModelBackedChestXRaySpecialistAdapter,
+    SpecialistRegistry,
+)
 from aegis_dx.store import SQLiteCaseStore
 from aegis_dx.tracing import (
     CORRELATION_ID_HEADER,
@@ -47,6 +51,17 @@ def _build_queue(settings: Settings) -> CaseQueuePort:
     return InProcessCaseQueue()
 
 
+def _build_cxr_specialist(settings: Settings) -> SpecialistPort:
+    if settings.cxr_specialist_backend == "torchxrayvision-local":
+        return HFTorchXRayVisionSpecialistAdapter()
+    return ModelBackedChestXRaySpecialistAdapter(
+        endpoint_url=settings.cxr_specialist_endpoint_url,
+        api_key=settings.cxr_specialist_api_key,
+        model_version=settings.cxr_specialist_model_version,
+        request_timeout_seconds=settings.cxr_specialist_timeout_seconds,
+    )
+
+
 def _build_runtime(settings: Settings) -> WorkflowRuntime:
     assert_heterogeneous_verifier(
         settings.cxr_specialist_endpoint_url,
@@ -54,16 +69,7 @@ def _build_runtime(settings: Settings) -> WorkflowRuntime:
     )
     store = _build_store(settings)
     case_queue = _build_queue(settings)
-    specialists = SpecialistRegistry(
-        [
-            ModelBackedChestXRaySpecialistAdapter(
-                endpoint_url=settings.cxr_specialist_endpoint_url,
-                api_key=settings.cxr_specialist_api_key,
-                model_version=settings.cxr_specialist_model_version,
-                request_timeout_seconds=settings.cxr_specialist_timeout_seconds,
-            )
-        ]
-    )
+    specialists = SpecialistRegistry([_build_cxr_specialist(settings)])
     verifier = ModelBackedVerificationAdapter(
         endpoint_url=settings.verifier_endpoint_url,
         api_key=settings.verifier_api_key,

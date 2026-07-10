@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import json
+import os
 from urllib import error, request
+from urllib.parse import urlparse
 
 from aegis_dx.domain import ArtifactRecord, Finding, TriageDecision
+from aegis_dx.models.torchxrayvision_backend import (
+    TorchXRayVisionClassifier,
+    TorchXRayVisionUnavailable,
+)
 from aegis_dx.ports import SpecialistPort
 
 
@@ -177,6 +183,110 @@ class ModelBackedChestXRaySpecialistAdapter(SpecialistPort):
             return None
         text = str(value).strip()
         return text or None
+
+
+_CLAIM_PHRASE_BY_PATHOLOGY: dict[str, str] = {
+    "Effusion": "pleural effusion",
+    "Enlarged Cardiomediastinum": "enlarged cardiomediastinum",
+    "Lung Opacity": "lung opacity",
+    "Lung Lesion": "lung lesion",
+}
+
+
+def _resolve_local_image_path(artifact_uri: str | None) -> str | None:
+    if not artifact_uri:
+        return None
+    # Try it as a literal OS path first - urlparse misreads a Windows drive
+    # letter ("C:\...") as a URI scheme, so a plain-path check must come before
+    # any URL parsing.
+    if os.path.isfile(artifact_uri):
+        return artifact_uri
+
+    parsed = urlparse(artifact_uri)
+    if parsed.scheme != "file":
+        return None
+    path = parsed.path
+    # file:// URIs on Windows parse with a leading slash before the drive letter.
+    if path.startswith("/") and len(path) > 2 and path[2] == ":":
+        path = path[1:]
+    return path if os.path.isfile(path) else None
+
+
+class HFTorchXRayVisionSpecialistAdapter(SpecialistPort):
+    """A real, locally-run CXR specialist backed by torchxrayvision's
+    independently-trained CheXpert DenseNet121 (see docs/04-data-models.md).
+
+    Unlike ModelBackedChestXRaySpecialistAdapter, this doesn't call an external
+    endpoint - it runs actual pixel classification in-process against an image
+    resolved from `artifact.artifact_uri`. Falls back to
+    StubChestXRaySpecialistAdapter whenever no image is available, the
+    torchxrayvision package/weights aren't available, or classification fails -
+    same "never silently produce zero findings" rule as the other specialist
+    adapters.
+    """
+
+    modality = "chest_xray"
+
+    def __init__(
+        self,
+        *,
+        classifier: TorchXRayVisionClassifier | None = None,
+        positive_threshold: float = 0.5,
+        max_findings: int = 5,
+        source_agent: str = "cxr-specialist",
+        model_version: str = "torchxrayvision-densenet121-chex",
+        unconfigured_fallback: SpecialistPort | None = None,
+    ) -> None:
+        self._classifier = classifier or TorchXRayVisionClassifier()
+        self._positive_threshold = positive_threshold
+        self._max_findings = max_findings
+        self._source_agent = source_agent
+        self._model_version = model_version
+        self._fallback = unconfigured_fallback or StubChestXRaySpecialistAdapter()
+
+    def analyze(self, artifact: ArtifactRecord, triage: TriageDecision) -> list[Finding]:
+        image_path = _resolve_local_image_path(artifact.artifact_uri)
+        if not image_path:
+            return self._fallback.analyze(artifact, triage)
+
+        try:
+            probabilities = self._classifier.classify_image_path(image_path)
+        except (TorchXRayVisionUnavailable, OSError, ValueError, RuntimeError):
+            return self._fallback.analyze(artifact, triage)
+
+        findings = self._findings_from_probabilities(probabilities)
+        return findings or self._fallback.analyze(artifact, triage)
+
+    def _findings_from_probabilities(self, probabilities: dict[str, float]) -> list[Finding]:
+        positive = sorted(
+            ((name, prob) for name, prob in probabilities.items() if prob >= self._positive_threshold),
+            key=lambda item: item[1],
+            reverse=True,
+        )[: self._max_findings]
+
+        if not positive:
+            return [
+                Finding(
+                    claim="No focal cardiopulmonary abnormality identified in the draft path.",
+                    locus="global-thorax",
+                    probability=round(max(0.55, 1.0 - max(probabilities.values(), default=0.4)), 2),
+                    source_agent=self._source_agent,
+                    model_version=self._model_version,
+                    saliency_ref=None,
+                )
+            ]
+
+        return [
+            Finding(
+                claim=f"Possible {_CLAIM_PHRASE_BY_PATHOLOGY.get(name, name.lower())}.",
+                locus=TorchXRayVisionClassifier.locus_for_pathology(name),
+                probability=round(probability, 4),
+                source_agent=self._source_agent,
+                model_version=self._model_version,
+                saliency_ref=None,
+            )
+            for name, probability in positive
+        ]
 
 
 class SpecialistRegistry:
