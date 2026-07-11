@@ -24,6 +24,13 @@ is a hard architectural rule, not a nice-to-have.
 MDAgents, ColaCare, MDTeamGPT, Agent Hospital, Tree-of-Reasoning, ClinicalAgents
 (dual-memory).
 
+> **The agent layer is designed in depth in
+> [15 — Agentic Architecture](15-agentic-architecture.md)**, which analyzes these
+> systems concretely and upgrades this linear roster to adaptive complexity-tiered
+> collaboration with *bounded* reflexion, verification, and consultation loops
+> (agents in loops, but always terminating). The roster and pipeline below are the
+> Tier-1/Tier-2 baseline; doc 15 adds the Tier-3 panel/debate machinery for hard cases.
+
 ## Agent roster (the LangGraph nodes)
 
 | Agent | Job | Backing model / tool | Output |
