@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 RESEARCH_ONLY_DISCLAIMER = (
@@ -141,6 +141,35 @@ class StructuredReport(BaseModel):
     disclaimer: str = RESEARCH_ONLY_DISCLAIMER
 
 
+class SegmentationBox(BaseModel):
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
+
+    @model_validator(mode="after")
+    def validate_ordered_coordinates(self) -> "SegmentationBox":
+        if min(self.x_min, self.y_min, self.x_max, self.y_max) < 0:
+            raise ValueError("Segmentation box coordinates must be non-negative.")
+        if self.x_min >= self.x_max or self.y_min >= self.y_max:
+            raise ValueError("Segmentation box maximum coordinates must exceed minimum coordinates.")
+        return self
+
+
+class SegmentationRefinementRequest(BaseModel):
+    artifact_uri: str
+    box: SegmentationBox
+
+
+class SegmentationRefinementResult(BaseModel):
+    artifact_uri: str
+    model_version: str
+    mask_encoding: str = "rle"
+    mask_shape: tuple[int, int]
+    positive_pixels: int
+    rle: list[int] = Field(default_factory=list)
+
+
 class HumanReviewRecord(BaseModel):
     action: HumanAction
     actor_id: str
@@ -162,7 +191,12 @@ class CaseRecord(BaseModel):
     evidence: list[EvidenceSnippet] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
     verification: list[VerificationResult] = Field(default_factory=list)
+    verification_round: int = 0
+    consensus_kappa: float | None = None
+    complexity_tier: str | None = None
     differential: list[DifferentialItem] = Field(default_factory=list)
+    reflexion_revisions: int = 0
+    reflexion_incomplete: bool = False
     escalation: EscalationDecision = Field(default_factory=EscalationDecision)
     report: StructuredReport | None = None
     human_review: HumanReviewRecord | None = None
@@ -217,3 +251,14 @@ class EventSchemaDefinition(BaseModel):
     schema_version: str
     description: str
     required_payload_fields: list[str] = Field(default_factory=list)
+
+
+class ModelRuntimeStatus(BaseModel):
+    component: str
+    backend: str
+    model_version: str
+    execution_mode: str
+    configured: bool
+    fallback_available: bool
+    runtime_ready: bool
+    readiness_reason: str

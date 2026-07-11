@@ -14,6 +14,18 @@ It extends [02](02-architecture.md); it does not replace it. The ports
 ([D6](07-risks-decisions.md)), and the mandatory human-confirm gate
 ([06](06-compliance-safety.md)) all still hold.
 
+> **Implementation status:** §5.1 (reflexion) and §5.2 (heterogeneous
+> verify↔re-query) are **implemented and tested** — `packages/core/src/aegis_dx/consensus.py`
+> (Cohen's κ, complexity classification), `WorkflowRuntime`'s bounded loop in
+> `workflow.py`, and `ReflexiveSynthesisAdapter` in `composition.py`. All
+> reasoning is deterministic (rule-based evaluators/repairs), matching this
+> project's "adapt existing HF/API models, don't train new ones" constraint —
+> the same interface a real LLM-backed critique step would implement, so
+> wiring one in later is a drop-in change, not a redesign. §5.3 (consultation/
+> debate for Tier-3 panels) is **not yet implemented** — it needs a second
+> specialist genuinely in the panel to be meaningful (see §11). See
+> [14 — Implementation Status](14-implementation-status.md) for the full picture.
+
 ---
 
 ## 1. The accuracy thesis

@@ -52,6 +52,36 @@ CASE_EVENT_SCHEMAS: dict[str, EventSchemaDefinition] = {
         description="Verification finished for the current finding set.",
         required_payload_fields=["trace_id", "status", "flags", "escalated_findings"],
     ),
+    "workflow.reverified": EventSchemaDefinition(
+        event_type="workflow.reverified",
+        schema_version="1.0.0",
+        description=(
+            "Verify<->re-query loop (docs/15) re-ran analysis+verification for another "
+            "round because measured consensus was below threshold."
+        ),
+        required_payload_fields=["trace_id", "status", "verification_round", "consensus_kappa"],
+    ),
+    "workflow.verification_loop_exhausted": EventSchemaDefinition(
+        event_type="workflow.verification_loop_exhausted",
+        schema_version="1.0.0",
+        description=(
+            "The bounded verify<->re-query loop hit its round cap without reaching "
+            "consensus; the disagreement is surfaced to the clinician, never hidden."
+        ),
+        required_payload_fields=["trace_id", "status", "verification_round", "consensus_kappa"],
+    ),
+    "workflow.complexity_routed": EventSchemaDefinition(
+        event_type="workflow.complexity_routed",
+        schema_version="1.0.0",
+        description="Adaptive complexity router (docs/15) assigned a collaboration tier.",
+        required_payload_fields=["trace_id", "status", "complexity_tier", "consensus_kappa"],
+    ),
+    "workflow.reflexion_applied": EventSchemaDefinition(
+        event_type="workflow.reflexion_applied",
+        schema_version="1.0.0",
+        description="Reflexion loop (docs/15) revised synthesis output based on self-critique.",
+        required_payload_fields=["trace_id", "status", "reflexion_revisions"],
+    ),
     "workflow.synthesized": EventSchemaDefinition(
         event_type="workflow.synthesized",
         schema_version="1.0.0",

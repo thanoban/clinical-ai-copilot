@@ -5,7 +5,14 @@ import threading
 import uuid
 
 from aegis_dx.adapters import StubIngestionAdapter, StubTriageAdapter
+from aegis_dx.audit import StoreAuditAdapter
 from aegis_dx.composition import StubReportAdapter, StubRetrievalAdapter, StubSynthesisAdapter
+from aegis_dx.consensus import (
+    MAX_VERIFICATION_ROUNDS,
+    classify_complexity_tier,
+    compute_case_consensus,
+    requires_requery,
+)
 from aegis_dx.domain import (
     ActorRole,
     AuditEvent,
@@ -25,8 +32,10 @@ from aegis_dx.domain import (
 )
 from aegis_dx.ports import (
     CaseStorePort,
+    AuditPort,
     GuardrailPort,
     IngestionPort,
+    MetricsPort,
     ReportPort,
     RetrievalPort,
     SynthesisPort,
@@ -38,6 +47,7 @@ from aegis_dx.specialists import SpecialistRegistry, StubChestXRaySpecialistAdap
 from aegis_dx.event_schemas import get_event_schema
 from aegis_dx.tracing import bind_correlation_id, get_correlation_id
 from aegis_dx.trust import StubGuardrailAdapter, StubVerificationAdapter
+from aegis_dx.metrics import NoopMetrics
 
 
 class WorkflowRuntime:
@@ -53,6 +63,8 @@ class WorkflowRuntime:
         verifier: VerificationPort | None = None,
         guardrail: GuardrailPort | None = None,
         case_queue: CaseQueuePort | None = None,
+        metrics: MetricsPort | None = None,
+        audit: AuditPort | None = None,
         worker_poll_interval_seconds: float = 0.05,
     ) -> None:
         self._store = store
@@ -66,6 +78,8 @@ class WorkflowRuntime:
         self._guardrail = guardrail or StubGuardrailAdapter()
         self._worker_poll_interval_seconds = worker_poll_interval_seconds
         self._queue: CaseQueuePort = case_queue or InProcessCaseQueue()
+        self._metrics = metrics or NoopMetrics()
+        self._audit = audit or StoreAuditAdapter(store)
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
 
@@ -128,6 +142,7 @@ class WorkflowRuntime:
             principal=principal,
             payload={"site_id": request.site_id, "source_system": request.artifact.source_system},
         )
+        self._metrics.inc("aegis_dx_cases_submitted_total")
         self._append_case_event(
             case,
             event_type="case.submitted",
@@ -189,6 +204,10 @@ class WorkflowRuntime:
         )
         case.updated_at = datetime.now(timezone.utc)
         self._store.save_case(case)
+        self._metrics.inc(
+            "aegis_dx_human_review_actions_total",
+            labels={"action": review.action.value},
+        )
         self._append_audit(
             case,
             event_type=f"case.review.{review.action.value}",
@@ -227,6 +246,11 @@ class WorkflowRuntime:
         case = self._store.get_case(case_id)
         if case is None or case.status in TERMINAL_CASE_STATUSES:
             return
+
+        self._metrics.inc(
+            "aegis_dx_workflow_cases_started_total",
+            labels={"modality": case.modality or "pending"},
+        )
 
         service_principal = service_principal.model_copy(update={"tenant_id": case.tenant_id})
         with bind_correlation_id(case.trace_id):
@@ -297,6 +321,14 @@ class WorkflowRuntime:
                             urgency=case.urgency,
                         )
                         case.findings = specialist.analyze(case.artifact, triage)
+                        for finding in case.findings:
+                            self._metrics.inc(
+                                "aegis_dx_model_findings_total",
+                                labels={
+                                    "modality": triage.modality,
+                                    "model_version": finding.model_version,
+                                },
+                            )
                         if not case.findings:
                             case.status = CaseStatus.DEGRADED
                             case.escalation = EscalationDecision(
@@ -337,8 +369,13 @@ class WorkflowRuntime:
                         region=case.region or "unknown",
                         urgency=case.urgency,
                     )
-                    case.verification = self._verifier.verify(case.findings, case.evidence, triage)
-                    case.status = CaseStatus.SYNTHESIZED
+                    case.verification = self._verifier.verify(
+                        case.artifact,
+                        case.findings,
+                        case.evidence,
+                        triage,
+                    )
+                    case.consensus_kappa = compute_case_consensus(case.findings, case.verification)
                     self._transition(
                         case,
                         service_principal,
@@ -348,8 +385,71 @@ class WorkflowRuntime:
                             "escalated_findings": sum(
                                 1 for item in case.verification if item.requires_escalation
                             ),
+                            "verification_round": case.verification_round,
+                            "consensus_kappa": case.consensus_kappa,
                         },
                     )
+
+                    # Bounded verify<->re-query loop (docs/15 SS5.2, D18). A
+                    # disagreement re-runs specialist analysis + verification for
+                    # another round rather than silently proceeding on shaky
+                    # consensus - but only up to MAX_VERIFICATION_ROUNDS, so a
+                    # persistently disagreeing case surfaces to the clinician
+                    # instead of looping forever.
+                    if (
+                        requires_requery(case.consensus_kappa, case.verification)
+                        and case.verification_round < MAX_VERIFICATION_ROUNDS
+                    ):
+                        case.verification_round += 1
+                        case.status = CaseStatus.ANALYZING
+                        self._metrics.inc(
+                            "aegis_dx_verification_requery_total",
+                            labels={"modality": triage.modality},
+                        )
+                        self._transition(
+                            case,
+                            service_principal,
+                            "workflow.reverified",
+                            payload={
+                                "verification_round": case.verification_round,
+                                "consensus_kappa": case.consensus_kappa,
+                            },
+                        )
+                        continue
+
+                    if requires_requery(case.consensus_kappa, case.verification):
+                        # Bound exhausted while still disagreeing - never hide
+                        # this from the clinician (docs/06); the guardrail's
+                        # existing escalation-on-disagreement logic already
+                        # surfaces it, this event just makes the loop's own
+                        # outcome auditable.
+                        self._transition(
+                            case,
+                            service_principal,
+                            "workflow.verification_loop_exhausted",
+                            payload={
+                                "verification_round": case.verification_round,
+                                "consensus_kappa": case.consensus_kappa,
+                            },
+                        )
+
+                    case.complexity_tier = classify_complexity_tier(
+                        case.findings,
+                        case.verification,
+                        case.urgency,
+                        case.consensus_kappa,
+                    )
+                    self._transition(
+                        case,
+                        service_principal,
+                        "workflow.complexity_routed",
+                        payload={
+                            "complexity_tier": case.complexity_tier,
+                            "consensus_kappa": case.consensus_kappa,
+                        },
+                    )
+
+                    case.status = CaseStatus.SYNTHESIZED
                     continue
 
                 if case.status == CaseStatus.SYNTHESIZED:
@@ -363,13 +463,20 @@ class WorkflowRuntime:
                         case.evidence,
                         triage,
                     )
-                    case.report = self._reporter.compose(
-                        case.artifact,
-                        triage,
-                        case.findings,
-                        case.evidence,
-                        case.differential,
-                    )
+                    # Reflexion loop bookkeeping (docs/15 SS5.1): duck-typed rather
+                    # than an isinstance check on ReflexiveSynthesisAdapter, so the
+                    # workflow stays decoupled from any concrete adapter class -
+                    # any SynthesisPort that tracks this shape of self-critique
+                    # gets its outcome recorded the same way.
+                    case.reflexion_revisions = getattr(self._synthesis, "last_revisions", 0)
+                    case.reflexion_incomplete = getattr(self._synthesis, "last_incomplete", False)
+                    if case.reflexion_revisions:
+                        self._transition(
+                            case,
+                            service_principal,
+                            "workflow.reflexion_applied",
+                            payload={"reflexion_revisions": case.reflexion_revisions},
+                        )
                     case.status = CaseStatus.CALIBRATED
                     self._transition(
                         case,
@@ -378,6 +485,8 @@ class WorkflowRuntime:
                         payload={
                             "differential": len(case.differential),
                             "evidence_count": len(case.evidence),
+                            "reflexion_revisions": case.reflexion_revisions,
+                            "reflexion_incomplete": case.reflexion_incomplete,
                         },
                     )
                     continue
@@ -393,9 +502,25 @@ class WorkflowRuntime:
                         case.verification,
                         triage,
                     )
+                    if case.escalation.required:
+                        self._metrics.inc(
+                            "aegis_dx_escalations_total",
+                            labels={"modality": triage.modality, "reason": "guardrail"},
+                        )
+                    case.report = self._reporter.compose(
+                        case.artifact,
+                        triage,
+                        case.findings,
+                        case.evidence,
+                        case.differential,
+                        case.verification,
+                        case.escalation,
+                    )
                     case.status = (
                         CaseStatus.ESCALATED if case.escalation.required else CaseStatus.AWAITING_REVIEW
                     )
+                    if case.status == CaseStatus.AWAITING_REVIEW:
+                        self._record_workflow_completion(case)
                     self._transition(
                         case,
                         service_principal,
@@ -406,6 +531,7 @@ class WorkflowRuntime:
 
                 if case.status in {CaseStatus.ESCALATED, CaseStatus.DEGRADED}:
                     case.status = CaseStatus.AWAITING_REVIEW
+                    self._record_workflow_completion(case)
                     self._transition(case, service_principal, "workflow.awaiting_review")
                     continue
 
@@ -473,7 +599,7 @@ class WorkflowRuntime:
             actor_role=principal.role.value,
             payload={**base_payload, **(payload or {})},
         )
-        return self._store.append_audit_event(event)
+        return self._audit.append(event)
 
     def _append_case_event(
         self,
@@ -494,4 +620,10 @@ class WorkflowRuntime:
             payload={**base_payload, **(payload or {})},
         )
         return self._store.append_case_event(event)
+
+    def _record_workflow_completion(self, case: CaseRecord) -> None:
+        self._metrics.inc(
+            "aegis_dx_workflow_cases_completed_total",
+            labels={"modality": case.modality or "unknown", "status": case.status.value},
+        )
 
