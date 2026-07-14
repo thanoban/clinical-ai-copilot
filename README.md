@@ -73,6 +73,7 @@ adding vertical #2 must not require touching the orchestrator.
 | [13 — Agent Build Plan](docs/13-agent-build-plan.md) | Build order for every agent in the roster, I/O contracts, prompt strategy, acceptance/contract tests |
 | [14 — Implementation Status](docs/14-implementation-status.md) | What's actually built and verified vs. the plan, known gaps, what's genuinely next |
 | [15 — Agentic Architecture](docs/15-agentic-architecture.md) | Adaptive complexity-tiered collaboration; bounded reflexion/verify/consultation loops; analysis of MDAgents, ColaCare & agentic patterns |
+| [16 — Feature Learning Map](docs/16-feature-learning-map.md) | A learning-first guide to the implemented feature set, with deeper subsystem walkthroughs for later self-study |
 
 ## Novelty candidates (pick one to lead with)
 
